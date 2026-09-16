@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
 
 const { initSchema } = require("./db.js");
 const authRoutes = require("./routes/auth.js");
@@ -15,6 +16,12 @@ app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api", portalRoutes);
 
+const frontendDist = path.join(__dirname, "../frontend/dist");
+app.use(express.static(frontendDist));
+app.get(/^(?!\/api).*/, (req, res) => {
+  res.sendFile(path.join(frontendDist, "index.html"));
+});
+
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ error: "Something went wrong on the server." });
@@ -24,4 +31,6 @@ let schemaReady;
 function ensureSchema() {
   if (!schemaReady) schemaReady = initSchema();
   return schemaReady;
-}module.exports = { app, ensureSchema };
+}
+
+module.exports = { app, ensureSchema };
