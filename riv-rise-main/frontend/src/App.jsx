@@ -191,7 +191,7 @@ function LoginView({ onAuthed }) {
         <div style={{ textAlign: "center", marginBottom: 28 }}>
           <img src="/riv-logo-full.png" alt="Retail Innovation Ventures" style={{ height: 48, marginBottom: 10 }} />
           <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 22, color: BRAND.ink }}>RISE Portal</div>
-          <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginTop: 6 }}>GTM partner & startup introductions</div>
+          <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginTop: 6 }}>Retail Innovation Scaling Engine</div>
         </div>
         <Card style={{ padding: 26 }}>
           <form onSubmit={submit}>
@@ -207,9 +207,6 @@ function LoginView({ onAuthed }) {
             </PrimaryButton>
           </form>
         </Card>
-        <div style={{ textAlign: "center", fontFamily: FONT, fontSize: 11.5, color: "#B7B2AE", marginTop: 18 }}>
-          Demo logins — Partner: partner@rise-gtm.demo / partner123 · Startup: startup@rise-gtm.demo / startup123
-        </div>
       </div>
     </div>
   );
