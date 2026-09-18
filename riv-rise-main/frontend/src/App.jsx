@@ -45,7 +45,30 @@ const APPROVAL_COLORS = {
   "Introduced": { bg: "#E8F0FE", fg: BRAND.blue },
   "Proof Recorded": { bg: "#E6F4EA", fg: "#1E7A34" },
 };
-const DEAL_STATUS_OPTIONS = ["Demo", "Pilot", "Proposal", "Negotiation", "Follow-up", "Closed Won", "Closed Lost"];
+// Deal Status (18 Sep 2026 addendum — Startup Retailer Introductions
+// two-tab split). Must match backend/db.js's DEAL_STATUSES exactly (kept
+// as a literal here rather than fetched, same reasoning as STATUS_COLORS
+// above).
+const DEAL_STATUS_OPTIONS = ["Not Started", "In Discussion", "PoC/Evaluation", "Proposal", "Negotiation", "Closed - Won", "Closed - Lost", "Stalled"];
+const DEAL_STATUS_COLORS = {
+  "Not Started": { bg: "#F3F1EE", fg: "#8A857F" },
+  "In Discussion": { bg: "#FFF4E0", fg: "#B8790A" },
+  "PoC/Evaluation": { bg: "#FFF4E0", fg: "#B8790A" },
+  "Proposal": { bg: "#E8F0FE", fg: BRAND.blue },
+  "Negotiation": { bg: "#E8F0FE", fg: BRAND.blue },
+  "Closed - Won": { bg: "#E6F4EA", fg: "#1E7A34" },
+  "Closed - Lost": { bg: "#FBEAEA", fg: BRAND.coralDark },
+  "Stalled": { bg: "#F3F1EE", fg: "#8A857F" },
+};
+
+// Startup Commit Status (Tab 2 — Retailer Introductions Initiated by RIV
+// — only). Must match backend/db.js's COMMIT_STATUSES exactly.
+const COMMIT_STATUS_OPTIONS = ["OK to introduce", "Already in touch", "Not a right customer"];
+const COMMIT_STATUS_COLORS = {
+  "OK to introduce": { bg: "#E6F4EA", fg: "#1E7A34" },
+  "Already in touch": { bg: "#FFF4E0", fg: "#B8790A" },
+  "Not a right customer": { bg: "#FBEAEA", fg: BRAND.coralDark },
+};
 
 // Retailer status colors: green once approved, yellow when flagged as a
 // possible duplicate of an existing retailer, red once rejected. Prospect
@@ -221,7 +244,9 @@ function NavBar({ view, setView, user, onLogout }) {
       { id: "startups", label: "Startups" }, { id: "retailers", label: "My Retailers" },
       { id: "requests", label: "Introduction Requests" },
     ] : user.role === "startup" ? [
-      { id: "retailers", label: "Retailer Directory" }, { id: "introductions", label: "Startup Retailer Introductions" },
+      { id: "retailers", label: "Retailer Directory" },
+      { id: "introductions-requested", label: "Retailer Introductions Requested" },
+      { id: "introductions-initiated", label: "Retailer Introductions Initiated by RIV" },
     ] : [
       { id: "overview", label: "Overview" }, { id: "partners", label: "Partners" }, { id: "startups", label: "Startups" },
       { id: "retailers", label: "Retailers" }, { id: "introductions", label: "Introductions" },
@@ -643,13 +668,134 @@ function AddRetailerModal({ onClose, onCreated }) {
   );
 }
 
-// Startup Retailer Introductions / "My Introduction Requests" (addendum
-// §2) — Introduction Request Status, Deal Status, and Opportunity Value
-// columns, the latter two directly editable by the startup here.
-function IntroductionsListView({ onOpen, onRequestIntro, refreshKey }) {
+/* =========================================================================
+   STARTUP RETAILER INTRODUCTIONS — Tab 1 (Requested) & Tab 2 (Initiated by
+   RIV), 18 Sep 2026 addendum. Replaces the single IntroductionsListView
+   that used to hold both kinds of rows together.
+
+   Shared pieces: a search/filter bar, a table shell, and a read-only "View
+   Details" modal — both tabs use all three, only the columns differ.
+   ========================================================================= */
+
+// Search box + Introduction Status filter, shared by both tabs (PRD:
+// Tab 1 item 13 / Tab 2 item 14, "Provide search/filter functionality").
+function IntroSearchBar({ search, setSearch, statusFilter, setStatusFilter }) {
+  return (
+    <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+      <input
+        style={{ ...inputStyle, flex: "2 1 220px" }}
+        placeholder="Search by retailer name…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      <select style={{ ...inputStyle, flex: "1 1 180px" }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+        <option value="">All Introduction Statuses</option>
+        {Object.keys(STATUS_COLORS).map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function filterIntros(intros, search, statusFilter) {
+  const q = search.trim().toLowerCase();
+  return intros.filter((i) => {
+    if (statusFilter && i.status !== statusFilter) return false;
+    if (q && !i.retailer_name?.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+// Deal Status select — editable only once Introduction Status is
+// "Introduced" (PRD Tab 1 item 8 / Tab 2 item 10); a plain read-only badge
+// otherwise. Shared by both tabs since the rule is identical.
+function DealStatusCell({ intro, onSave }) {
+  const editable = intro.status === "Introduced";
+  if (!editable) {
+    return intro.engagement_stage
+      ? <StatusBadge status={intro.engagement_stage} colors={DEAL_STATUS_COLORS} />
+      : <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#B7B2AE" }}>—</span>;
+  }
+  return (
+    <select style={{ ...inputStyle, minWidth: 150 }} value={intro.engagement_stage || ""} onChange={(e) => onSave({ dealStatus: e.target.value })}>
+      <option value="">—</option>
+      {DEAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+    </select>
+  );
+}
+
+// Opportunity Value input — editable only once Introduction Status is
+// "Introduced" AND Deal Status isn't yet "Closed - Won" (PRD Tab 1 items
+// 9–10 / Tab 2 items 11–12); read-only display in every other case.
+function OpportunityValueCell({ intro, onSave }) {
+  const editable = intro.status === "Introduced" && intro.engagement_stage !== "Closed - Won";
+  if (!editable) {
+    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{money(intro.opportunity_value)}</span>;
+  }
+  return (
+    <input
+      style={{ ...inputStyle, minWidth: 130 }}
+      type="number"
+      defaultValue={intro.opportunity_value || ""}
+      onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
+    />
+  );
+}
+
+// Startup Commit Status select — Tab 2 only (PRD Tab 2 items 5–8). Always
+// editable (the startup can change its mind before RIV acts on it); saving
+// fires the notify-RIV side effect on the backend.
+function CommitStatusCell({ intro, onSave, busy }) {
+  return (
+    <select
+      style={{ ...inputStyle, minWidth: 170 }}
+      value={intro.startup_commit_status || ""}
+      disabled={busy}
+      onChange={(e) => e.target.value && onSave(e.target.value)}
+    >
+      <option value="">— Select —</option>
+      {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+    </select>
+  );
+}
+
+// A lightweight responsive table shell — header row + one row per intro —
+// shared by both tabs so column layout only has to be described once per
+// tab via `columns`.
+function IntroTable({ columns, rows, renderRow, emptyIcon, emptyTitle, emptyText }) {
+  if (!rows.length) return <EmptyState icon={emptyIcon} title={emptyTitle} text={emptyText} />;
+  return (
+    <Card style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 880 }}>
+        <thead>
+          <tr style={{ borderBottom: `1px solid ${BRAND.line}` }}>
+            {columns.map((c) => (
+              <th key={c} style={{ textAlign: "left", padding: "12px 14px", fontFamily: FONT, fontWeight: 600, fontSize: 11, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, whiteSpace: "nowrap" }}>
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((intro, idx) => renderRow(intro, idx))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+const cellStyle = { padding: "12px 14px", fontFamily: FONT, fontSize: 13, color: BRAND.ink, borderBottom: `1px solid ${BRAND.line}`, verticalAlign: "middle" };
+
+// Tab 1 — Retailer Introductions Requested (PRD "Screen 1"). Startup-
+// initiated requests; RIV controls approval + introduction, startup only
+// ever edits Deal Status / Opportunity Value, and only once Introduced.
+function RetailIntroductionsRequestedView({ onOpen, refreshKey }) {
   const [intros, setIntros] = useState(null);
   const [error, setError] = useState("");
-  const load = useCallback(() => api.getIntroductions().then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), []);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const load = useCallback(
+    () => api.getIntroductions("Startup").then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)),
+    []
+  );
   useEffect(() => { load(); }, [load, refreshKey]);
 
   async function saveOpportunity(id, patch) {
@@ -658,41 +804,173 @@ function IntroductionsListView({ onOpen, onRequestIntro, refreshKey }) {
     catch (e) { setError(e.message); }
   }
 
+  if (error) return <ErrorBanner text={error} />;
+  if (!intros) return <Spinner />;
+  const rows = filterIntros(intros, search, statusFilter);
+
   return (
     <div>
       <ErrorBanner text={error} />
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
-        <PrimaryButton icon={Send} onClick={onRequestIntro}>Request Intro</PrimaryButton>
+      <IntroSearchBar search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} />
+      <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 10, lineHeight: 1.6 }}>
+        Start a new introduction request from Retailer Directory.
       </div>
-      {!intros ? <Spinner /> : !intros.length ? (
-        <EmptyState icon={ClipboardList} title="No introduction requests yet" text="Use Request Intro to ask RIV to route you to a retailer." />
-      ) : intros.map((i) => (
-        <Card key={i.id} style={{ padding: 16, marginBottom: 10 }}>
-          <div onClick={() => onOpen(i)} style={{ cursor: "pointer", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{i.retailer_name}</div>
-              <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>
-                {i.partner_name ? `via ${i.partner_name}` : "RIV direct"} · Requested {dateStr(i.request_date)}
-              </div>
-            </div>
-            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
-          </div>
-          <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 160px" }}>
-              <div style={{ fontFamily: FONT, fontSize: 11, color: "#9B958F", marginBottom: 4 }}>Deal Status</div>
-              <select style={inputStyle} value={i.engagement_stage || ""} onChange={(e) => saveOpportunity(i.id, { dealStatus: e.target.value })}>
-                <option value="">—</option>
-                {DEAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div style={{ flex: "1 1 160px" }}>
-              <div style={{ fontFamily: FONT, fontSize: 11, color: "#9B958F", marginBottom: 4 }}>Opportunity Value (USD)</div>
-              <input style={inputStyle} type="number" defaultValue={i.opportunity_value || ""} onBlur={(e) => e.target.value !== String(i.opportunity_value || "") && saveOpportunity(i.id, { opportunityValue: e.target.value || null })} />
-            </div>
-          </div>
-        </Card>
-      ))}
+      <IntroTable
+        columns={["Retailer Name", "Requested Date", "RIV Approval Status", "Introduction Status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
+        rows={rows}
+        emptyIcon={ClipboardList}
+        emptyTitle={intros.length ? "No requests match your search" : "No introduction requests yet"}
+        emptyText={intros.length ? "Try a different retailer name or status." : "Use Retailer Directory to ask RIV to route you to a retailer."}
+        renderRow={(i) => (
+          <tr key={i.id}>
+            <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
+            <td style={cellStyle}>{dateStr(i.request_date)}</td>
+            <td style={cellStyle}><StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} /></td>
+            <td style={cellStyle}><StatusBadge status={i.status} /></td>
+            <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+            <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+            <td style={cellStyle}>{dateStr(i.updated_at)}</td>
+            <td style={cellStyle}><GhostButton onClick={() => onOpen(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
+          </tr>
+        )}
+      />
     </div>
+  );
+}
+
+// Tab 2 — Retailer Introductions Initiated by RIV (PRD "Screen 2"). RIV
+// surfaces the opportunity; the startup's first move is Commit Status,
+// then RIV controls Introduction Status the same as Tab 1.
+function RetailIntroductionsInitiatedByRivView({ onOpen, refreshKey }) {
+  const [intros, setIntros] = useState(null);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [savingId, setSavingId] = useState(null);
+  const load = useCallback(
+    () => api.getIntroductions("RIV Admin").then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)),
+    []
+  );
+  useEffect(() => { load(); }, [load, refreshKey]);
+
+  async function saveOpportunity(id, patch) {
+    setError("");
+    try { await api.updateOpportunity(id, patch); load(); }
+    catch (e) { setError(e.message); }
+  }
+  async function saveCommitStatus(id, commitStatus) {
+    setError(""); setSavingId(id);
+    try { await api.updateCommitStatus(id, commitStatus); await load(); }
+    catch (e) { setError(e.message); }
+    finally { setSavingId(null); }
+  }
+
+  if (error) return <ErrorBanner text={error} />;
+  if (!intros) return <Spinner />;
+  const rows = filterIntros(intros, search, statusFilter);
+
+  return (
+    <div>
+      <ErrorBanner text={error} />
+      <IntroSearchBar search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} />
+      <IntroTable
+        columns={["Retailer Name", "Initiated Date", "Startup Commit Status", "Introduction Status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
+        rows={rows}
+        emptyIcon={Handshake}
+        emptyTitle={intros.length ? "No opportunities match your search" : "No opportunities yet"}
+        emptyText={intros.length ? "Try a different retailer name or status." : "Opportunities RIV identifies for you will appear here."}
+        renderRow={(i) => (
+          <tr key={i.id}>
+            <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
+            <td style={cellStyle}>{dateStr(i.request_date)}</td>
+            <td style={cellStyle}><CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} /></td>
+            <td style={cellStyle}><StatusBadge status={i.status} /></td>
+            <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+            <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+            <td style={cellStyle}>{dateStr(i.updated_at)}</td>
+            <td style={cellStyle}><GhostButton onClick={() => onOpen(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
+          </tr>
+        )}
+      />
+    </div>
+  );
+}
+
+// Read-only "View Details" modal, shared by both tabs. Tab 1 (item 12):
+// "the complete introduction request, including supporting documents."
+// Tab 2 (item 13): "the complete opportunity/request context and relevant
+// supporting documents." No actions here on purpose — both screens are
+// explicitly view-only for the startup beyond Deal Status/Opportunity
+// Value (Tab 1 & 2) and Commit Status (Tab 2), which are edited inline in
+// the table, not from this modal.
+function IntroViewDetailsModal({ intro, onClose }) {
+  const isRivInitiated = intro.initiated_by === "RIV Admin";
+  const rows = [
+    ["Retailer", intro.retailer_name],
+    ["Category", intro.retailer_category],
+    ["Network", intro.partner_name ? `via ${intro.partner_name}` : "RIV direct"],
+    [isRivInitiated ? "Initiated Date" : "Requested Date", dateStr(intro.request_date)],
+    ...(isRivInitiated ? [] : [["RIV Approval Status", intro.approval_status]]),
+    ["Introduction Status", intro.status],
+    ["Deal Status", intro.engagement_stage || "—"],
+    ["Opportunity Value", money(intro.opportunity_value)],
+    ...(isRivInitiated ? [["Startup Commit Status", intro.startup_commit_status || "Not yet responded"]] : []),
+    ["Last Updated", `${dateStr(intro.updated_at)}${intro.updated_by ? ` · ${intro.updated_by}` : ""}`],
+  ];
+  const requestRows = [
+    ["Why interested", intro.why_interested],
+    ["Problem solved for enterprise", intro.problem_solved],
+    ["Relevant product/offering", intro.relevant_offering],
+    ["Desired buyer persona", intro.buyer_persona],
+    ["Previously engaged", intro.previously_engaged === null ? null : (intro.previously_engaged ? "Yes" : "No")],
+    ["Prior engagement details", intro.prior_engagement_details],
+    ["Supporting material", intro.supporting_material_url],
+  ].filter(([, v]) => v);
+  const proofRows = [
+    ["Channel", intro.channel],
+    ["Introduction date", intro.introduction_date ? dateStr(intro.introduction_date) : null],
+    ["Proof of introduction", intro.proof_of_introduction],
+  ].filter(([, v]) => v);
+
+  return (
+    <Modal title={intro.retailer_name} onClose={onClose} width={560}>
+      {rows.map(([label, value]) => (
+        <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: `1px solid ${BRAND.line}` }}>
+          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>{label}</div>
+          <div style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, color: BRAND.ink, textAlign: "right" }}>{value}</div>
+        </div>
+      ))}
+
+      {!!requestRows.length && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>
+            {isRivInitiated ? "Opportunity context" : "Original request"}
+          </div>
+          {requestRows.map(([label, value]) => (
+            <div key={label} style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 }}>{label}</div>
+              <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!!proofRows.length && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>Supporting documents</div>
+          {proofRows.map(([label, value]) => (
+            <div key={label} style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 }}>{label}</div>
+              <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!requestRows.length && !proofRows.length && (
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F", marginTop: 14 }}>No supporting documents on file yet.</div>
+      )}
+    </Modal>
   );
 }
 
@@ -1194,32 +1472,6 @@ function AdminPayoutsView() {
   );
 }
 
-// Small retailer picker shown when a startup clicks "Request Intro" from
-// the Startup Retailer Introductions tab directly (rather than from a
-// specific retailer card in the directory) — selecting one hands off to
-// the full RequestIntroductionModal questionnaire.
-function SelectRetailerForIntroModal({ onSelect, onClose }) {
-  const [retailers, setRetailers] = useState(null);
-  const [error, setError] = useState("");
-  useEffect(() => { api.getRetailers().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)); }, []);
-  return (
-    <Modal title="Select a retailer" onClose={onClose}>
-      <ErrorBanner text={error} />
-      {!retailers ? <Spinner /> : !retailers.length ? (
-        <EmptyState icon={Building2} title="No approved retailers yet" text="Check back once RIV has approved retailers into the network." />
-      ) : retailers.map((r) => (
-        <Card key={r.id} onClick={() => onSelect(r)} style={{ padding: 14, marginBottom: 8, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13.5, color: BRAND.ink }}>{r.brand || r.name}</div>
-            <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F" }}>{r.category} · {r.location}</div>
-          </div>
-          <ArrowRight size={14} color="#B7B2AE" />
-        </Card>
-      ))}
-    </Modal>
-  );
-}
-
 /* =========================================================================
    ROOT
    ========================================================================= */
@@ -1227,8 +1479,8 @@ export default function RiseGtmApp() {
   const [user, setUser] = useState(() => getStoredUser());
   const [view, setView] = useState(null);
   const [openIntro, setOpenIntro] = useState(null);
+  const [openIntroDetails, setOpenIntroDetails] = useState(null);
   const [requestRetailer, setRequestRetailer] = useState(null);
-  const [pickingRetailer, setPickingRetailer] = useState(false);
   const [showAddRetailer, setShowAddRetailer] = useState(false);
   const [detailStartupId, setDetailStartupId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -1270,8 +1522,11 @@ export default function RiseGtmApp() {
         {user.role === "partner" && view === "startups" && <PartnerStartupsView onViewDetails={setDetailStartupId} />}
         {user.role === "partner" && view === "retailers" && <RetailerDirectoryView user={user} onRequest={() => {}} />}
         {user.role === "partner" && view === "requests" && <PartnerIntroductionRequestsView refreshKey={refreshKey} />}
-        {user.role === "startup" && view === "introductions" && (
-          <IntroductionsListView onOpen={setOpenIntro} onRequestIntro={() => setPickingRetailer(true)} refreshKey={refreshKey} />
+        {user.role === "startup" && view === "introductions-requested" && (
+          <RetailIntroductionsRequestedView onOpen={setOpenIntroDetails} refreshKey={refreshKey} />
+        )}
+        {user.role === "startup" && view === "introductions-initiated" && (
+          <RetailIntroductionsInitiatedByRivView onOpen={setOpenIntroDetails} refreshKey={refreshKey} />
         )}
         {user.role === "startup" && view === "retailers" && <RetailerDirectoryView user={user} onRequest={setRequestRetailer} />}
 
@@ -1285,10 +1540,8 @@ export default function RiseGtmApp() {
       </div>
 
       {openIntro && <IntroDetailModal intro={openIntro} user={user} onClose={() => setOpenIntro(null)} onRefresh={async () => refresh()} />}
+      {openIntroDetails && <IntroViewDetailsModal intro={openIntroDetails} onClose={() => setOpenIntroDetails(null)} />}
       {requestRetailer && <RequestIntroductionModal retailer={requestRetailer} onClose={() => setRequestRetailer(null)} onCreated={async () => refresh()} />}
-      {pickingRetailer && (
-        <SelectRetailerForIntroModal onClose={() => setPickingRetailer(false)} onSelect={(r) => { setPickingRetailer(false); setRequestRetailer(r); }} />
-      )}
       {showAddRetailer && <AddRetailerModal onClose={() => setShowAddRetailer(false)} onCreated={async () => refresh()} />}
       {detailStartupId && <StartupDetailModal startupId={detailStartupId} onClose={() => setDetailStartupId(null)} />}
     </div>

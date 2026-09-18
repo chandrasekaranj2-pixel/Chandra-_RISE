@@ -51,10 +51,14 @@ export const api = {
   getStartup: (id) => request(`/startups/${id}`),
   getRetailers: () => request("/retailers"),
   addRetailer: (payload) => request("/retailers", { method: "POST", body: payload }),
-  getIntroductions: () => request("/introductions"),
+  // initiatedBy: "Startup" (Tab 1 — Retailer Introductions Requested) or
+  // "RIV Admin" (Tab 2 — Retailer Introductions Initiated by RIV). Omit to
+  // get everything (used elsewhere, e.g. the GTM partner's requests tab).
+  getIntroductions: (initiatedBy) => request(`/introductions${initiatedBy ? `?initiatedBy=${encodeURIComponent(initiatedBy)}` : ""}`),
   getIntroduction: (id) => request(`/introductions/${id}`),
   createIntroduction: (payload) => request("/introductions", { method: "POST", body: payload }),
   updateOpportunity: (id, payload) => request(`/introductions/${id}/opportunity`, { method: "PUT", body: payload }),
+  updateCommitStatus: (id, commitStatus) => request(`/introductions/${id}/commit-status`, { method: "PUT", body: { commitStatus } }),
   confirmRequest: (id) => request(`/introductions/${id}/confirm-request`, { method: "PUT" }),
   agreeIntroduction: (id) => request(`/introductions/${id}/agree`, { method: "PUT" }),
   logIntroduction: (id, payload) => request(`/introductions/${id}/log-introduction`, { method: "PUT", body: payload }),

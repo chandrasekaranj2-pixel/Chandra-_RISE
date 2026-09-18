@@ -70,7 +70,22 @@ const APPROVAL_STATUSES = [
 // Deal Status dropdown (addendum §2) — repurposes the existing
 // engagement_stage column, replacing its old five-value set (In
 // discussion/Piloting/Stalled/Won/Lost) with this one.
-const DEAL_STATUSES = ["Demo", "Pilot", "Proposal", "Negotiation", "Follow-up", "Closed Won", "Closed Lost"];
+//
+// 18 Sep 2026 addendum (Startup Retailer Introductions — two-tab split):
+// replaced with the copy-ready list from that PRD (was: Demo/Pilot/
+// Proposal/Negotiation/Follow-up/Closed Won/Closed Lost). Only the
+// literal string values change here — everything that reads/writes
+// engagement_stage (this list, the CHECK constraint below, and the
+// frontend's DEAL_STATUS_OPTIONS) stays wired the same way.
+const DEAL_STATUSES = [
+  "Not Started", "In Discussion", "PoC/Evaluation", "Proposal",
+  "Negotiation", "Closed - Won", "Closed - Lost", "Stalled",
+];
+
+// Startup Commit Status (18 Sep 2026 addendum) — Tab 2 ("Retailer
+// Introductions Initiated by RIV") only. The startup's first response to
+// an opportunity RIV has surfaced, before any introduction is made.
+const COMMIT_STATUSES = ["OK to introduce", "Already in touch", "Not a right customer"];
 
 async function initSchema() {
   await pool.query(`
@@ -310,6 +325,13 @@ async function initSchema() {
     -- the partner has already engaged the enterprise contact.
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS gtm_context_note TEXT;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS how_introduced TEXT;
+
+    -- Startup Commit Status (18 Sep 2026 addendum, Tab 2 only) — the
+    -- startup's first response to a RIV-initiated opportunity. Nullable:
+    -- unset until the startup picks one, and never used on Tab 1
+    -- (startup-requested) rows.
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS startup_commit_status TEXT;
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS startup_commit_status_at TIMESTAMPTZ;
   `);
 
   // approval_status / engagement_stage (repurposed as Deal Status) both
@@ -336,6 +358,10 @@ async function initSchema() {
     ALTER TABLE introductions DROP CONSTRAINT IF EXISTS introductions_engagement_stage_check;
     ALTER TABLE introductions ADD CONSTRAINT introductions_engagement_stage_check
       CHECK (engagement_stage IN (${DEAL_STATUSES.map((s) => `'${s}'`).join(",")})) NOT VALID;
+
+    ALTER TABLE introductions DROP CONSTRAINT IF EXISTS introductions_startup_commit_status_check;
+    ALTER TABLE introductions ADD CONSTRAINT introductions_startup_commit_status_check
+      CHECK (startup_commit_status IN (${COMMIT_STATUSES.map((s) => `'${s}'`).join(",")})) NOT VALID;
   `);
 
   // Retailer status: Prospect (submitted, unreviewed — neutral/grey in the
@@ -352,4 +378,4 @@ async function initSchema() {
   `);
 }
 
-module.exports = { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, initSchema };
+module.exports = { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, initSchema };
