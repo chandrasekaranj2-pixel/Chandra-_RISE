@@ -71,7 +71,10 @@ async function seed() {
      VALUES
        ('GTM Partner', $1, $2, $3, 'GTM Partner', CURRENT_DATE - INTERVAL '21 days', true, now() - INTERVAL '20 days', 15, 25, 'In Progress', 'Email', CURRENT_DATE - INTERVAL '18 days',
         'Forwarded intro email thread — Vijetha <> Shoppers Stop Head of Innovation, 18 days ago.',
-        $4::jsonb, 'Piloting')`,
+        -- 'Piloting' was the pre-12-Sep-2026 Deal Status value; the 18-Sep-2026
+        -- addendum's list (backend/db.js's DEAL_STATUSES) uses 'PoC/Evaluation'
+        -- for the equivalent stage. Keep this in sync with that list.
+        $4::jsonb, 'PoC/Evaluation')`,
     [
       partnerId,
       startupId,

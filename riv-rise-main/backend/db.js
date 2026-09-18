@@ -347,9 +347,38 @@ async function initSchema() {
   // discussion"/"Piloting"/"Won"/"Lost" — the old five-value set, not the
   // new Deal Status list) fails validation and crashes the boot outright
   // (this is exactly what happened in production — ATRewriteTable erroring
-  // on introductions_engagement_stage_check). NOT VALID skips validating
-  // old rows retroactively while still enforcing the constraint on every
-  // new insert/update going forward, which is all we actually need.
+  // on introductions_engagement_stage_check).
+  //
+  // NOT VALID only skips checking existing rows AT THE MOMENT the
+  // constraint is (re)created — it does NOT exempt them going forward.
+  // Postgres re-validates a row's *entire* CHECK constraint set on every
+  // subsequent write to that row, even an UPDATE that never touches the
+  // constrained column. So an old row still holding a stale
+  // engagement_stage value (e.g. 'Piloting') would pass right up until
+  // the next Approve/Reject/follow-up/etc. touches it — then throws
+  // "violates check constraint introductions_engagement_stage_check" out
+  // of nowhere (this is exactly what happened in production, 18 Sep 2026,
+  // on the seeded demo row). Old rows have to be normalized to the current
+  // value set *before* the constraint is applied, every boot — not just
+  // exempted from the one-time validation.
+  await pool.query(`
+    UPDATE introductions SET engagement_stage = CASE engagement_stage
+      -- Original five-value set (pre-12-Sep-2026 addendum).
+      WHEN 'In discussion' THEN 'In Discussion'
+      WHEN 'Piloting' THEN 'PoC/Evaluation'
+      WHEN 'Won' THEN 'Closed - Won'
+      WHEN 'Lost' THEN 'Closed - Lost'
+      -- 12-Sep-2026 addendum's set (superseded by this 18-Sep set).
+      WHEN 'Demo' THEN 'Not Started'
+      WHEN 'Pilot' THEN 'PoC/Evaluation'
+      WHEN 'Follow-up' THEN 'Negotiation'
+      WHEN 'Closed Won' THEN 'Closed - Won'
+      WHEN 'Closed Lost' THEN 'Closed - Lost'
+      ELSE engagement_stage
+    END
+    WHERE engagement_stage IS NOT NULL
+      AND engagement_stage NOT IN (${DEAL_STATUSES.map((s) => `'${s}'`).join(",")});
+  `);
   await pool.query(`
     ALTER TABLE introductions DROP CONSTRAINT IF EXISTS introductions_approval_status_check;
     ALTER TABLE introductions ADD CONSTRAINT introductions_approval_status_check
