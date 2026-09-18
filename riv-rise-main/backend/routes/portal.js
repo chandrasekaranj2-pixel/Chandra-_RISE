@@ -10,7 +10,7 @@
 // request now runs through the approval_status chain (see db.js) rather
 // than going live immediately.
 const { Router } = require("express");
-const { pool, APPROVAL_STATUSES, DEAL_STATUSES } = require("../db.js");
+const { pool, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
 const { requireAuth, requireRole } = require("../middleware/auth.js");
 
 const router = Router();
@@ -169,17 +169,30 @@ const INTRO_SELECT = `
 `;
 
 // GET /api/introductions — "own" introductions only (PRD §9).
+//
+// 18 Sep 2026 addendum: optional ?initiatedBy= filter, used by the two
+// Startup Retailer Introductions tabs to pull just their half each
+// ("Startup" for Tab 1 — Retailer Introductions Requested; "RIV Admin"
+// for Tab 2 — Retailer Introductions Initiated by RIV) instead of
+// fetching everything and splitting client-side.
 router.get("/introductions", requireRole("partner", "startup"), async (req, res, next) => {
   try {
+    const { initiatedBy } = req.query;
+    const initiatedByFilter = ["GTM Partner", "Startup", "RIV Admin"].includes(initiatedBy) ? initiatedBy : null;
+
     if (isPartner(req)) {
       const { rows: partnerRows } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
       const partnerId = partnerRows[0]?.id ?? -1;
-      const { rows } = await pool.query(`${INTRO_SELECT} WHERE i.partner_id = $1 ORDER BY i.updated_at DESC`, [partnerId]);
+      const { rows } = initiatedByFilter
+        ? await pool.query(`${INTRO_SELECT} WHERE i.partner_id = $1 AND i.initiated_by = $2 ORDER BY i.updated_at DESC`, [partnerId, initiatedByFilter])
+        : await pool.query(`${INTRO_SELECT} WHERE i.partner_id = $1 ORDER BY i.updated_at DESC`, [partnerId]);
       return res.json({ introductions: rows });
     }
     const { rows: startupRows } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
     const startupId = startupRows[0]?.id ?? -1;
-    const { rows } = await pool.query(`${INTRO_SELECT} WHERE i.startup_id = $1 ORDER BY i.updated_at DESC`, [startupId]);
+    const { rows } = initiatedByFilter
+      ? await pool.query(`${INTRO_SELECT} WHERE i.startup_id = $1 AND i.initiated_by = $2 ORDER BY i.updated_at DESC`, [startupId, initiatedByFilter])
+      : await pool.query(`${INTRO_SELECT} WHERE i.startup_id = $1 ORDER BY i.updated_at DESC`, [startupId]);
     res.json({ introductions: rows });
   } catch (err) {
     next(err);
@@ -254,7 +267,14 @@ router.post("/introductions", requireRole("startup"), async (req, res, next) => 
 // PUT /api/introductions/:id/opportunity — startup edits Opportunity Value
 // and/or Deal Status at any point once the request exists (addendum §2's
 // "My Introduction Requests" columns — both are startup-editable, unlike
-// the RIV-driven approval_status).
+// the RIV-driven approval_status). Shared by both Startup Retailer
+// Introductions tabs (Tab 1 — Requested, and Tab 2 — Initiated by RIV);
+// the gating rules below are identical for both per the 18 Sep 2026 PRD.
+//
+// Server-side mirror of the UI's editable/read-only rules (PRD §Tab 1
+// items 8–10 / §Tab 2 items 10–12) — the frontend already disables these
+// inputs at the same points, this just stops a direct API call from
+// bypassing that.
 router.put("/introductions/:id/opportunity", requireRole("startup"), async (req, res, next) => {
   try {
     const { opportunityValue, dealStatus } = req.body || {};
@@ -266,12 +286,53 @@ router.put("/introductions/:id/opportunity", requireRole("startup"), async (req,
     const intro = introRows[0];
     if (!intro || intro.startup_id !== s[0]?.id) return res.status(404).json({ error: "Introduction not found." });
 
+    if ((dealStatus || opportunityValue !== undefined) && intro.status !== "Introduced") {
+      return res.status(400).json({ error: "Deal Status and Opportunity Value can only be set once Introduction Status is \"Introduced\"." });
+    }
+    if (opportunityValue !== undefined && intro.engagement_stage === "Closed - Won") {
+      return res.status(400).json({ error: "Opportunity Value is read-only once Deal Status is \"Closed – Won\"." });
+    }
+
     const { rows } = await pool.query(
       `UPDATE introductions SET opportunity_value = COALESCE($2, opportunity_value),
          engagement_stage = COALESCE($3, engagement_stage), updated_at = now(), updated_by = $4
        WHERE id = $1 RETURNING *`,
       [req.params.id, opportunityValue ?? null, dealStatus || null, req.user.name]
     );
+    res.json({ introduction: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/introductions/:id/commit-status — Tab 2 ("Retailer
+// Introductions Initiated by RIV") only. The startup's first response to
+// an opportunity RIV surfaced (copy-ready PRD, Tab 2 items 5–8):
+//   - "OK to introduce"        -> notifies RIV to proceed with the intro.
+//   - "Already in touch"       -> notifies RIV, flags a likely duplicate.
+//   - "Not a right customer"   -> notifies RIV, who decides final disposition.
+// RIV keeps full control of Introduction Status either way (item 9) — this
+// endpoint only ever writes startup_commit_status, never status/approval_status.
+router.put("/introductions/:id/commit-status", requireRole("startup"), async (req, res, next) => {
+  try {
+    const { commitStatus } = req.body || {};
+    if (!COMMIT_STATUSES.includes(commitStatus)) {
+      return res.status(400).json({ error: `commitStatus must be one of: ${COMMIT_STATUSES.join(", ")}` });
+    }
+    const { rows: s } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
+    const { rows: introRows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
+    const intro = introRows[0];
+    if (!intro || intro.startup_id !== s[0]?.id) return res.status(404).json({ error: "Introduction not found." });
+    if (intro.initiated_by !== "RIV Admin") {
+      return res.status(400).json({ error: "Commit Status only applies to opportunities RIV initiated." });
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE introductions SET startup_commit_status = $2, startup_commit_status_at = now(), updated_at = now(), updated_by = $3
+       WHERE id = $1 RETURNING *`,
+      [req.params.id, commitStatus, req.user.name]
+    );
+    await notifyAdmins(`Startup commit status: ${commitStatus}`, req.params.id);
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -499,6 +560,15 @@ async function notifyUserId(poolRef, type, introId, userId) {
     "INSERT INTO notifications (recipient_user_id, type, related_introduction_id, message) VALUES ($1,$2,$3,$4)",
     [userId, type, introId, type]
   );
+}
+// Fans a notification out to every RIV Admin login — there's no single
+// "RIV" recipient row (admin.js's notifyStartup/notifyPartner target one
+// partner/startup profile's user_id; there's no equivalent "the admin
+// team" profile), so this is the startup-side mirror: look up every user
+// with role='admin' and log one notification row each.
+async function notifyAdmins(type, introId) {
+  const { rows } = await pool.query("SELECT id FROM users WHERE role = 'admin'");
+  await Promise.all(rows.map((u) => notifyUserId(pool, type, introId, u.id)));
 }
 // Notifies whichever side (partner or startup) did NOT just take the
 // action — used for shared-access actions like follow-up/close where
