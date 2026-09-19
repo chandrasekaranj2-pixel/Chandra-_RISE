@@ -21,7 +21,18 @@ function getClient() {
       "Supporting-material upload is not configured: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
     );
   }
-  client = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+  // 19 Sep 2026 fix — this project's Supabase key is in the newer
+  // sb_secret_... format rather than a legacy service_role JWT. The
+  // Storage gateway needs the key on an explicit `apikey` header to
+  // recognize that format directly; without it, it falls back to trying
+  // to decode the Authorization bearer token as a JWT and fails with
+  // "Invalid Compact JWS" (opaque sb_secret_ keys aren't JWTs). Passing
+  // it as a global header here, alongside the Authorization header
+  // supabase-js already sets, fixes uploads/signed URLs without needing
+  // a legacy-format key.
+  client = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+    global: { headers: { apikey: process.env.SUPABASE_SERVICE_ROLE_KEY } },
+  });
   return client;
 }
 
