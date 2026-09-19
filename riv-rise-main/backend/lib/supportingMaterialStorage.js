@@ -1,11 +1,29 @@
-// Supporting Material file storage (18 Sep 2026 addendum) — files are kept
-// in a private Supabase Storage bucket (business-sensitive pitch content,
-// not meant to be publicly linkable), separate from the Postgres database
-// connection used everywhere else in this app. Requires two env vars that
-// don't exist yet in production and need adding: SUPABASE_URL and
-// SUPABASE_SERVICE_ROLE_KEY (service role, not anon — uploads/signing run
-// server-side only, never exposed to the browser). See backend/.env.example.
-const { createClient } = require("@supabase/supabase-js");
+// Supporting Material file storage (18 Sep 2026 addendum, rewritten 19 Sep
+// 2026) — files are kept in a private Supabase Storage bucket
+// (business-sensitive pitch content, not meant to be publicly linkable),
+// separate from the Postgres database connection used everywhere else in
+// this app.
+//
+// Originally built on @supabase/supabase-js's storage client using a
+// service_role key. That hit a Supabase-side gap: this project's Supabase
+// key is issued in the newer sb_secret_... format, and Storage's own
+// signature verification doesn't yet handle that format correctly
+// end-to-end ("Invalid Compact JWS" using the key as-is; "signature
+// verification failed" even after hand-reconstructing a legacy-format
+// service_role JWT from the project's Legacy JWT secret) — a known
+// in-progress gap on Supabase's platform as of Sep 2026, not something
+// fixable from our side of that integration.
+//
+// Switched instead to Supabase Storage's S3-compatible API, which uses
+// dedicated Access Key ID / Secret Access Key credentials (Project
+// Settings → Storage → S3 Connection) — a completely separate auth
+// mechanism from the JWT/API-key system above, unaffected by that gap.
+// These keys bypass RLS and are server-only, same trust level as the old
+// service_role key. Needs four env vars (see backend/.env.example):
+// SUPABASE_S3_ENDPOINT, SUPABASE_S3_REGION, SUPABASE_S3_ACCESS_KEY_ID,
+// SUPABASE_S3_SECRET_ACCESS_KEY.
+const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl: s3GetSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const BUCKET = process.env.SUPABASE_SUPPORTING_MATERIAL_BUCKET || "supporting-material";
 // How long a generated download link stays valid — regenerated fresh on
@@ -16,22 +34,20 @@ const SIGNED_URL_TTL_SECONDS = 60;
 let client = null;
 function getClient() {
   if (client) return client;
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  const { SUPABASE_S3_ENDPOINT, SUPABASE_S3_REGION, SUPABASE_S3_ACCESS_KEY_ID, SUPABASE_S3_SECRET_ACCESS_KEY } = process.env;
+  if (!SUPABASE_S3_ENDPOINT || !SUPABASE_S3_REGION || !SUPABASE_S3_ACCESS_KEY_ID || !SUPABASE_S3_SECRET_ACCESS_KEY) {
     throw new Error(
-      "Supporting-material upload is not configured: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+      "Supporting-material upload is not configured: set SUPABASE_S3_ENDPOINT, SUPABASE_S3_REGION, SUPABASE_S3_ACCESS_KEY_ID and SUPABASE_S3_SECRET_ACCESS_KEY."
     );
   }
-  // 19 Sep 2026 fix — this project's Supabase key is in the newer
-  // sb_secret_... format rather than a legacy service_role JWT. The
-  // Storage gateway needs the key on an explicit `apikey` header to
-  // recognize that format directly; without it, it falls back to trying
-  // to decode the Authorization bearer token as a JWT and fails with
-  // "Invalid Compact JWS" (opaque sb_secret_ keys aren't JWTs). Passing
-  // it as a global header here, alongside the Authorization header
-  // supabase-js already sets, fixes uploads/signed URLs without needing
-  // a legacy-format key.
-  client = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-    global: { headers: { apikey: process.env.SUPABASE_SERVICE_ROLE_KEY } },
+  client = new S3Client({
+    endpoint: SUPABASE_S3_ENDPOINT,
+    region: SUPABASE_S3_REGION,
+    credentials: {
+      accessKeyId: SUPABASE_S3_ACCESS_KEY_ID,
+      secretAccessKey: SUPABASE_S3_SECRET_ACCESS_KEY,
+    },
+    forcePathStyle: true,
   });
   return client;
 }
@@ -45,18 +61,23 @@ function sanitizeFilename(name) {
 // returns the array to store in introductions.supporting_material.
 async function uploadSupportingMaterial(files, { startupId }) {
   if (!files || !files.length) return [];
-  const supabase = getClient();
+  const s3 = getClient();
   const timestamp = Date.now();
 
   const uploaded = [];
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const path = `introductions/${startupId}/${timestamp}-${i}-${sanitizeFilename(file.originalname)}`;
-    const { error } = await supabase.storage.from(BUCKET).upload(path, file.buffer, {
-      contentType: file.mimetype,
-      upsert: false,
-    });
-    if (error) throw new Error(`Failed to upload "${file.originalname}": ${error.message}`);
+    try {
+      await s3.send(new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: path,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      }));
+    } catch (err) {
+      throw new Error(`Failed to upload "${file.originalname}": ${err.message}`);
+    }
     uploaded.push({ name: file.originalname, path, size: file.size, mime_type: file.mimetype });
   }
   return uploaded;
@@ -65,10 +86,16 @@ async function uploadSupportingMaterial(files, { startupId }) {
 // Generates a short-lived signed URL for one stored file, for the download
 // routes to redirect to. Never stored — regenerated per request.
 async function getSignedUrl(path) {
-  const supabase = getClient();
-  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
-  if (error) throw new Error(`Failed to generate download link: ${error.message}`);
-  return data.signedUrl;
+  const s3 = getClient();
+  try {
+    return await s3GetSignedUrl(
+      s3,
+      new GetObjectCommand({ Bucket: BUCKET, Key: path }),
+      { expiresIn: SIGNED_URL_TTL_SECONDS }
+    );
+  } catch (err) {
+    throw new Error(`Failed to generate download link: ${err.message}`);
+  }
 }
 
 module.exports = { uploadSupportingMaterial, getSignedUrl, BUCKET };
