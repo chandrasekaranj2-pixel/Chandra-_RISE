@@ -5,6 +5,9 @@ const { Router } = require("express");
 const bcrypt = require("bcryptjs");
 const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES } = require("../db.js");
 const { requireAuth, requireAdmin } = require("../middleware/auth.js");
+const portalRoutes = require("./portal.js");
+const { computePartnerFee } = portalRoutes;
+const { getSignedUrl } = require("../lib/supportingMaterialStorage.js");
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -143,17 +146,23 @@ router.post("/startups", async (req, res, next) => {
       startupName, founderName, email, phone, sector, solutionSummary, riv_owner,
       problemDescription, solutionDescription, topBenefits, techStack, subVertical,
       competition, competitiveAdvantage, payingCustomerCount, notableCustomers, keyMilestones,
+      legalEntity, website, city, hqCountry, yearIncorporated, foundingTeamDetails,
+      pastFundRaised, currentlyRaisingCapital, fundraisingSupportInterest, additionalNotes,
     } = req.body || {};
     if (!startupName || !email) return res.status(400).json({ error: "startupName and email are required." });
     const { rows } = await pool.query(
       `INSERT INTO startups
          (startup_name, founder_name, email, phone, sector, solution_summary, riv_owner,
           problem_description, solution_description, top_benefits, tech_stack, sub_vertical,
-          competition, competitive_advantage, paying_customer_count, notable_customers, key_milestones)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+          competition, competitive_advantage, paying_customer_count, notable_customers, key_milestones,
+          legal_entity, website, city, hq_country, year_incorporated, founding_team_details,
+          past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING *`,
       [startupName, founderName || null, email, phone || null, sector || null, solutionSummary || null, riv_owner || null,
        problemDescription || null, solutionDescription || null, topBenefits || null, techStack || null, subVertical || null,
-       competition || null, competitiveAdvantage || null, payingCustomerCount || null, notableCustomers || null, keyMilestones || null]
+       competition || null, competitiveAdvantage || null, payingCustomerCount || null, notableCustomers || null, keyMilestones || null,
+       legalEntity || null, website || null, city || null, hqCountry || null, yearIncorporated || null, foundingTeamDetails || null,
+       pastFundRaised || null, currentlyRaisingCapital || null, fundraisingSupportInterest || null, additionalNotes || null]
     );
     res.status(201).json({ startup: rows[0] });
   } catch (err) {
@@ -176,7 +185,13 @@ router.put("/startups/:id", async (req, res, next) => {
          top_benefits = COALESCE($19, top_benefits), tech_stack = COALESCE($20, tech_stack), sub_vertical = COALESCE($21, sub_vertical),
          competition = COALESCE($22, competition), competitive_advantage = COALESCE($23, competitive_advantage),
          paying_customer_count = COALESCE($24, paying_customer_count), notable_customers = COALESCE($25, notable_customers),
-         key_milestones = COALESCE($26, key_milestones), updated_at = now()
+         key_milestones = COALESCE($26, key_milestones),
+         legal_entity = COALESCE($27, legal_entity), website = COALESCE($28, website), city = COALESCE($29, city),
+         hq_country = COALESCE($30, hq_country), year_incorporated = COALESCE($31, year_incorporated),
+         founding_team_details = COALESCE($32, founding_team_details), past_fund_raised = COALESCE($33, past_fund_raised),
+         currently_raising_capital = COALESCE($34, currently_raising_capital),
+         fundraising_support_interest = COALESCE($35, fundraising_support_interest), additional_notes = COALESCE($36, additional_notes),
+         updated_at = now()
        WHERE id = $1 RETURNING *`,
       [
         req.params.id, f.startupName, f.founderName, f.phone, f.sector, f.solutionSummary,
@@ -184,6 +199,8 @@ router.put("/startups/:id", async (req, res, next) => {
         f.participationFeeDueDate, f.equityPct, f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
         f.problemDescription, f.solutionDescription, f.topBenefits, f.techStack, f.subVertical,
         f.competition, f.competitiveAdvantage, f.payingCustomerCount, f.notableCustomers, f.keyMilestones,
+        f.legalEntity, f.website, f.city, f.hqCountry, f.yearIncorporated, f.foundingTeamDetails,
+        f.pastFundRaised, f.currentlyRaisingCapital, f.fundraisingSupportInterest, f.additionalNotes,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Startup not found." });
@@ -284,6 +301,25 @@ router.put("/retailers/:id/approve", async (req, res, next) => {
   }
 });
 
+// PUT /api/admin/retailers/:id/mark-in-process — 18 Sep 2026 feedback's
+// three-stage visible pipeline for the partner's "My Retail Network" view
+// (Submitted for review -> In Process -> Approved). Display-only per the
+// reviewed open question — no other side effect, just the status flip so
+// the yellow badge on the partner side is backed by a real state instead
+// of only a UI color with nothing behind it.
+router.put("/retailers/:id/mark-in-process", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE retailers SET status = 'In Process' WHERE id = $1 AND status IN ('Prospect','Duplicate') RETURNING *`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Retailer not found, or not in a state that can move to In Process." });
+    res.json({ retailer: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PUT /api/admin/retailers/:id/reject — disapprove a submission with a
 // required reason, surfaced back to the submitting partner (RETAILER_
 // PUBLIC_COLUMNS in portal.js includes rejection_reason).
@@ -350,6 +386,25 @@ router.get("/introductions", async (req, res, next) => {
       ? await pool.query(`${INTRO_SELECT_ADMIN} WHERE i.status = $1 ORDER BY i.updated_at DESC`, [status])
       : await pool.query(`${INTRO_SELECT_ADMIN} ORDER BY i.updated_at DESC`);
     res.json({ introductions: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/introductions/:id/supporting-material/:index — admin
+// equivalent of the owner-scoped download route in portal.js; admin can
+// pull any introduction's files, not just their own (there is no "own"
+// for admin).
+router.get("/introductions/:id/supporting-material/:index", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT supporting_material FROM introductions WHERE id = $1", [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
+
+    const file = (rows[0].supporting_material || [])[Number(req.params.index)];
+    if (!file) return res.status(404).json({ error: "File not found." });
+
+    const url = await getSignedUrl(file.path);
+    res.redirect(url);
   } catch (err) {
     next(err);
   }
@@ -439,16 +494,37 @@ router.put("/introductions/:id", async (req, res, next) => {
     if (f.dealStatus && !DEAL_STATUSES.includes(f.dealStatus)) {
       return res.status(400).json({ error: `dealStatus must be one of: ${DEAL_STATUSES.join(", ")}` });
     }
+
+    // Rate lock at Closed-Won (18 Sep 2026 admin requirement): when this
+    // override is the one moving a GTM-Partner-initiated introduction to
+    // Closed-Won (RIV Direct introductions have no login to log a sale
+    // through the normal startup confirm-sale endpoint, so this is their
+    // only path there), compute and freeze the partner's fee the same way
+    // portal.js's confirm-sale does — same helper, same rule (only ever
+    // set for initiated_by = 'GTM Partner').
+    let partnerFeePct = null, partnerFeeAmount = null;
+    const closingNow = f.status === "Closed - Won" || f.dealStatus === "Closed - Won";
+    if (closingNow && f.feeAmountDue != null) {
+      const { rows: introRows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
+      if (introRows[0]) {
+        const computed = await computePartnerFee(introRows[0], f.feeAmountDue);
+        partnerFeePct = computed.partnerFeePct;
+        partnerFeeAmount = computed.partnerFeeAmount;
+      }
+    }
+
     const { rows } = await pool.query(
       `UPDATE introductions SET
          status = COALESCE($2, status), intro_rate = COALESCE($3, intro_rate), closure_rate = COALESCE($4, closure_rate),
          engagement_stage = COALESCE($5, COALESCE($9, engagement_stage)), deal_value = COALESCE($6, deal_value),
          fee_amount_due = COALESCE($7, fee_amount_due), approval_status = COALESCE($10, approval_status),
          opportunity_value = COALESCE($11, opportunity_value), proof_of_introduction = COALESCE($12, proof_of_introduction),
+         partner_fee_pct = COALESCE($13, partner_fee_pct), partner_fee_amount = COALESCE($14, partner_fee_amount),
          updated_at = now(), updated_by = $8
        WHERE id = $1 RETURNING *`,
       [req.params.id, f.status, f.introRate, f.closureRate, f.engagementStage, f.dealValue, f.feeAmountDue, req.user.name,
-       f.dealStatus, f.approvalStatus, f.opportunityValue ?? null, f.proofOfIntroduction || null]
+       f.dealStatus, f.approvalStatus, f.opportunityValue ?? null, f.proofOfIntroduction || null,
+       partnerFeePct, partnerFeeAmount]
     );
     if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
     res.json({ introduction: rows[0] });

@@ -67,6 +67,14 @@ const APPROVAL_STATUSES = [
   "Proof Recorded",
 ];
 
+// 18 Sep 2026 feedback restores the GTM partner's ability to originate an
+// introduction (POST /api/introductions is partner+startup again in
+// routes/portal.js — the 12 Sep addendum's removal of that branch is
+// reversed). initiated_by already had 'GTM Partner' as a valid value from
+// the original PRD, so no schema change was needed there, only the route.
+// The approval chain above is unchanged and applies the same way
+// regardless of who initiated: RIV always approves first either way.
+
 // Deal Status dropdown (addendum §2) — repurposes the existing
 // engagement_stage column, replacing its old five-value set (In
 // discussion/Piloting/Stalled/Won/Lost) with this one.
@@ -86,6 +94,19 @@ const DEAL_STATUSES = [
 // Introductions Initiated by RIV") only. The startup's first response to
 // an opportunity RIV has surfaced, before any introduction is made.
 const COMMIT_STATUSES = ["OK to introduce", "Already in touch", "Not a right customer"];
+
+// How the introduction itself was made. CREATE TABLE below only fires on a
+// brand-new database — on any DB where the introductions table already
+// existed (every real deployment, including this one as of 18 Sep 2026),
+// whatever CHECK constraint was live when that table was first created is
+// what still applies, no matter what this list says, until it's explicitly
+// re-applied via the migration block further down. Same class of bug as
+// the approval_status/engagement_stage/startup_commit_status constraints
+// (see the big comment near their migration block) — caught 18 Sep 2026
+// when the demo seed's 'Call' value (not in ANY version of this list)
+// violated introductions_channel_check against a live table whose
+// constraint had never been migrated forward.
+const CHANNELS = ["Email", "WhatsApp", "In-person", "Event"];
 
 async function initSchema() {
   await pool.query(`
@@ -149,6 +170,16 @@ async function initSchema() {
         CHECK (participation_fee_status IN ('Paid','Pending')),
       participation_fee_due_date DATE,
       equity_pct NUMERIC,
+      legal_entity TEXT,
+      website TEXT,
+      city TEXT,
+      hq_country TEXT,
+      year_incorporated TEXT,
+      founding_team_details TEXT,
+      past_fund_raised TEXT,
+      currently_raising_capital TEXT,
+      fundraising_support_interest TEXT,
+      additional_notes TEXT,
       revenue_share_override NUMERIC,
       portal_login_status TEXT NOT NULL DEFAULT 'Not Provisioned'
         CHECK (portal_login_status IN ('Not Provisioned','Provisioned','Suspended')),
@@ -302,6 +333,20 @@ async function initSchema() {
     ALTER TABLE startups ADD COLUMN IF NOT EXISTS notable_customers TEXT;
     ALTER TABLE startups ADD COLUMN IF NOT EXISTS key_milestones TEXT;
 
+    -- RISE GTM Application Form field parity (18 Sep 2026 feedback — "RIV
+    -- Portfolio Startups" detail view should mirror the Bigin application
+    -- form in full). These sit alongside the addendum §4 fields above.
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS legal_entity TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS website TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS city TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS hq_country TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS year_incorporated TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS founding_team_details TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS past_fund_raised TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS currently_raising_capital TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS fundraising_support_interest TEXT;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS additional_notes TEXT;
+
     -- New Introduction Request Status chain (separate from the legacy
     -- "status" lifecycle above — see APPROVAL_STATUSES comment).
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'Pending RIV Approval';
@@ -320,6 +365,15 @@ async function initSchema() {
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS previously_engaged BOOLEAN;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS prior_engagement_details TEXT;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS supporting_material_url TEXT;
+    -- Real file attachments (18 Sep 2026 addendum), replacing the old
+    -- free-text URL field above for new submissions. supporting_material_url
+    -- is left in place (not backfilled, not dropped) so any pre-addendum
+    -- rows that used it still read back fine. Each element of this array is
+    -- {name, path, size, mime_type} — "path" is the Supabase Storage object
+    -- key, not a public URL, since the bucket is private (RIV's supporting
+    -- material is business-sensitive pitch content); a signed URL is
+    -- generated on demand by the download route instead of being stored.
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS supporting_material JSONB NOT NULL DEFAULT '[]'::jsonb;
     -- GTM Partner's "Add Retailer" submission fields (Bigin form parity) —
     -- context for why this retailer/startup pairing is relevant and how
     -- the partner has already engaged the enterprise contact.
@@ -332,6 +386,19 @@ async function initSchema() {
     -- (startup-requested) rows.
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS startup_commit_status TEXT;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS startup_commit_status_at TIMESTAMPTZ;
+
+    -- GTM Partner login restore + Expected GTM Success Fee (18 Sep 2026
+    -- feedback). partner_fee_pct/partner_fee_amount are locked in at
+    -- Closed-Won time (not recomputed live off the partner's current
+    -- default_payout_split) so a later change to that partner's rate never
+    -- retroactively changes a figure already shown/paid on a closed deal —
+    -- see computePartnerFee() in routes/portal.js and routes/admin.js.
+    -- Only ever set for initiated_by = 'GTM Partner' rows (per 18 Sep 2026
+    -- decision: the partner's cut only applies when THEY originated the
+    -- introduction via "Introduce Startup to Retailers", not merely
+    -- because the retailer sits in their network).
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS partner_fee_pct NUMERIC;
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS partner_fee_amount NUMERIC;
   `);
 
   // approval_status / engagement_stage (repurposed as Deal Status) both
@@ -393,17 +460,36 @@ async function initSchema() {
       CHECK (startup_commit_status IN (${COMMIT_STATUSES.map((s) => `'${s}'`).join(",")})) NOT VALID;
   `);
 
-  // Retailer status: Prospect (submitted, unreviewed — neutral/grey in the
-  // UI) / Duplicate (name matched an existing retailer at submission time
-  // — yellow) / Active in network (RIV approved — green) / Rejected (RIV
-  // declined, with a reason — red). NOT VALID for the same reason as
-  // above: existing rows already hold 'Prospect'/'Active in network',
-  // which are still valid, but NOT VALID keeps this safe against any
-  // future superset changes the same way.
+  // channel — see the CHANNELS comment above: this table's channel CHECK
+  // constraint was never migrated forward before 18 Sep 2026, so a live
+  // deployment could be stuck on whatever set was live when the table was
+  // first created. Normalize any out-of-list existing value to NULL
+  // (channel is optional) rather than guess at a mapping, then re-apply
+  // the current CHANNELS list, same NOT VALID pattern as above.
+  await pool.query(`
+    UPDATE introductions SET channel = NULL
+    WHERE channel IS NOT NULL AND channel NOT IN (${CHANNELS.map((c) => `'${c}'`).join(",")});
+  `);
+  await pool.query(`
+    ALTER TABLE introductions DROP CONSTRAINT IF EXISTS introductions_channel_check;
+    ALTER TABLE introductions ADD CONSTRAINT introductions_channel_check
+      CHECK (channel IN (${CHANNELS.map((c) => `'${c}'`).join(",")})) NOT VALID;
+  `);
+
+  // Retailer status: Prospect (submitted, unreviewed — "Submitted for
+  // review", blue in the UI) / In Process (RIV is actively reviewing —
+  // yellow; 18 Sep 2026 feedback, display-only state with no separate
+  // trigger beyond RIV marking it) / Duplicate (name matched an existing
+  // retailer at submission time — flagged yellow/amber, kept distinct from
+  // In Process since it's informational) / Active in network (RIV approved
+  // — "Approved", green) / Rejected (RIV declined, with a reason — red).
+  // NOT VALID for the same reason as above: existing rows already hold
+  // 'Prospect'/'Active in network', which are still valid, but NOT VALID
+  // keeps this safe against any future superset changes the same way.
   await pool.query(`
     ALTER TABLE retailers DROP CONSTRAINT IF EXISTS retailers_status_check;
     ALTER TABLE retailers ADD CONSTRAINT retailers_status_check
-      CHECK (status IN ('Active in network','Prospect','Duplicate','Rejected')) NOT VALID;
+      CHECK (status IN ('Active in network','Prospect','In Process','Duplicate','Rejected')) NOT VALID;
   `);
 }
 

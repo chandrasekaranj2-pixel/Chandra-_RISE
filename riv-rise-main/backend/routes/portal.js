@@ -1,17 +1,18 @@
 // RISE Portal — GTM Partner + Startup facing endpoints (PRD §6.3, §6.4,
 // §6.5, §9 access rules). Admin-only management lives in admin.js.
 //
-// 12 Sep 2026 addendum: GTM partners no longer initiate introductions
-// directly (the old "Introduce" action from the Startups tab is gone —
-// see the removed partner branch of POST /introductions below). Their
-// only write action now is submitting a retailer via "Add Retailer" /
-// My Retailers, which goes to RIV for approval like everything else.
-// Startups are the only role that can request an introduction, and every
-// request now runs through the approval_status chain (see db.js) rather
-// than going live immediately.
+// 12 Sep 2026 addendum removed a GTM partner's ability to originate an
+// introduction directly. 18 Sep 2026 feedback restores it as a distinct
+// "Introduce Startup to Retailers" action (see POST /introductions'
+// partner branch below), run alongside a "Confirm Introduction" step for
+// pairings proposed to the partner by RIV or a startup — both still run
+// through the exact same approval_status chain as everything else (see
+// db.js): RIV approves first no matter who initiated.
 const { Router } = require("express");
 const { pool, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
 const { requireAuth, requireRole } = require("../middleware/auth.js");
+const { handleSupportingMaterialUpload } = require("../lib/supportingMaterialUpload.js");
+const { uploadSupportingMaterial, getSignedUrl } = require("../lib/supportingMaterialStorage.js");
 
 const router = Router();
 router.use(requireAuth);
@@ -72,7 +73,9 @@ router.get("/startups/:id", requireRole("partner", "startup", "admin"), async (r
     const { rows } = await pool.query(
       `SELECT id, startup_name, founder_name, sector, solution_summary, problem_description,
               solution_description, top_benefits, tech_stack, sub_vertical, competition,
-              competitive_advantage, paying_customer_count, notable_customers, key_milestones
+              competitive_advantage, paying_customer_count, notable_customers, key_milestones,
+              legal_entity, website, city, hq_country, year_incorporated, founding_team_details,
+              past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes
        FROM startups WHERE id = $1 AND status = 'Active'`,
       [req.params.id]
     );
@@ -199,6 +202,30 @@ router.get("/introductions", requireRole("partner", "startup"), async (req, res,
   }
 });
 
+// GET /api/introductions/confirm-queue — "Confirm Introduction" (18 Sep
+// 2026 feedback): the partner's queue of pairings proposed TO them (by
+// RIV or a startup) that are ready for their action — RIV has approved
+// and is waiting on the partner to make/log the introduction. Mirrors
+// what used to be buried inside the detail modal's "Log the introduction"
+// card at approval_status = 'Startup Confirmed'; this surfaces it as its
+// own tab-level list per the feedback, with the same approved-retailer /
+// approved-startup identifying columns. MUST be registered before
+// GET /introductions/:id below, or Express would match "confirm-queue"
+// as an :id instead.
+router.get("/introductions/confirm-queue", requireRole("partner"), async (req, res, next) => {
+  try {
+    const { rows: p } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
+    const partnerId = p[0]?.id ?? -1;
+    const { rows } = await pool.query(
+      `${INTRO_SELECT} WHERE i.partner_id = $1 AND i.approval_status = 'Startup Confirmed' ORDER BY i.updated_at DESC`,
+      [partnerId]
+    );
+    res.json({ introductions: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/introductions/:id — detail, scoped to owner.
 router.get("/introductions/:id", requireRole("partner", "startup"), async (req, res, next) => {
   try {
@@ -213,21 +240,31 @@ router.get("/introductions/:id", requireRole("partner", "startup"), async (req, 
   }
 });
 
-// POST /api/introductions — "Request Intro" (addendum §2/§3). Startup-only
-// now: GTM partners no longer propose introductions directly (their old
-// branch here is gone — see the file header note). Every request starts
-// at "Pending RIV Approval" regardless of whether the retailer sits in a
+// POST /api/introductions — "Request Intro" (startup, addendum §2/§3) OR
+// "Introduce Startup to Retailers" (partner, 18 Sep 2026 feedback — the
+// restored origination action). Every request starts at "Pending RIV
+// Approval" regardless of who initiated or whether the retailer sits in a
 // partner's network or is RIV Direct; RIV reviews everything before
-// anyone downstream hears about it. Fields mirror the Google Sheet/
-// tracker's Request Intro questionnaire exactly.
-router.post("/introductions", requireRole("startup"), async (req, res, next) => {
+// anyone downstream hears about it.
+//
+// multipart/form-data for the startup branch only (18 Sep 2026 addendum —
+// Supporting Material is now real file uploads, not a URL field): the
+// partner branch still sends plain JSON. handleSupportingMaterialUpload is
+// safe on both — multer recognizes a non-multipart request and calls
+// next() immediately without touching req.body, so the partner branch's
+// JSON body parsing (via the global express.json() in app.js) is
+// untouched either way.
+router.post("/introductions", requireRole("startup", "partner"), handleSupportingMaterialUpload, async (req, res, next) => {
   try {
+    if (isPartner(req)) return createPartnerInitiatedIntroduction(req, res, next);
+
     const {
       retailerId, whyInterested, problemSolved, relevantOffering, buyerPersona,
-      previouslyEngaged, priorEngagementDetails, supportingMaterialUrl, consentAccepted,
+      previouslyEngaged, priorEngagementDetails, consentAccepted,
     } = req.body || {};
     if (!retailerId) return res.status(400).json({ error: "Select the target enterprise (retailer)." });
-    if (!consentAccepted) return res.status(400).json({ error: "You must accept the Terms & Conditions to submit a request." });
+    // Sent as a multipart form field now, so it arrives as the string "true", not a boolean.
+    if (consentAccepted !== "true") return res.status(400).json({ error: "You must accept the Terms & Conditions to submit a request." });
 
     const { rows: s } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
     const startupId = s[0]?.id;
@@ -246,23 +283,93 @@ router.post("/introductions", requireRole("startup"), async (req, res, next) => 
     // status, which is always Pending RIV Approval now.
     const partnerId = retailer.network_source === "GTM Partner" ? retailer.owning_partner_id : null;
 
+    // Upload before insert so a storage failure doesn't leave behind an
+    // introduction row with files it claims to have but doesn't.
+    const supportingMaterial = await uploadSupportingMaterial(req.files, { startupId });
+
     const { rows } = await pool.query(
       `INSERT INTO introductions
          (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
           why_interested, problem_solved, relevant_offering, buyer_persona, previously_engaged,
-          prior_engagement_details, supporting_material_url, consent_accepted, consent_accepted_at)
+          prior_engagement_details, supporting_material, consent_accepted, consent_accepted_at)
        VALUES ('Startup', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested',
                $5, $6, $7, $8, $9, $10, $11, true, now())
        RETURNING *`,
       [partnerId, startupId, retailerId, retailer.network_source,
        whyInterested || null, problemSolved || null, relevantOffering || null, buyerPersona || null,
-       previouslyEngaged ?? null, priorEngagementDetails || null, supportingMaterialUrl || null]
+       previouslyEngaged === "true", priorEngagementDetails || null, JSON.stringify(supportingMaterial)]
     );
     res.status(201).json({ introduction: rows[0] });
   } catch (err) {
     next(err);
   }
 });
+
+// GET /api/introductions/:id/supporting-material/:index — redirects to a
+// freshly signed, short-lived download link for one attached file. Scoped
+// to the owning startup/partner like every other introduction read here;
+// the equivalent admin route (unscoped) lives in admin.js. Registered
+// before GET /introductions/:id (same route-ordering requirement as
+// confirm-queue above — a literal path segment must come before the :id
+// wildcard or it never matches).
+router.get("/introductions/:id/supporting-material/:index", requireRole("partner", "startup"), async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
+    const intro = rows[0];
+    if (!intro) return res.status(404).json({ error: "Introduction not found." });
+    if (!(await ownsIntro(req, intro))) return res.status(403).json({ error: "Not your introduction." });
+
+    const file = (intro.supporting_material || [])[Number(req.params.index)];
+    if (!file) return res.status(404).json({ error: "File not found." });
+
+    const url = await getSignedUrl(file.path);
+    res.redirect(url);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// "Introduce Startup to Retailers" (18 Sep 2026 feedback) — a GTM partner
+// proposes a retailer x startup pairing. Fields mirror the RISE
+// Introduction Submission Form by GTM Partners (Bigin) — name/email are
+// the logged-in partner, so only the pairing + opportunity context are
+// collected here. Both retailer and startup must already be approved
+// (Active in network / Active) — enforced server-side, not just by the
+// dropdown only offering approved options client-side. Always lands at
+// 'Pending RIV Approval' like every other introduction; this is what
+// makes the partner eligible for the Expected GTM Success Fee later (see
+// computePartnerFee below) since initiated_by is set to 'GTM Partner'.
+async function createPartnerInitiatedIntroduction(req, res, next) {
+  try {
+    const { retailerId, startupId, opportunityContext, howIntroduced, declarationAccepted } = req.body || {};
+    if (!retailerId || !startupId) return res.status(400).json({ error: "Select both a retailer and a startup." });
+    if (!declarationAccepted) return res.status(400).json({ error: "You must confirm you have personally facilitated this introduction." });
+
+    const { rows: p } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
+    const partnerId = p[0]?.id;
+    if (!partnerId) return res.status(403).json({ error: "No partner profile linked to this login." });
+
+    const { rows: retailerRows } = await pool.query(
+      "SELECT network_source FROM retailers WHERE id = $1 AND status = 'Active in network'", [retailerId]
+    );
+    if (!retailerRows[0]) return res.status(404).json({ error: "Retailer not found or not yet approved." });
+    const { rows: startupRows } = await pool.query("SELECT id FROM startups WHERE id = $1 AND status = 'Active'", [startupId]);
+    if (!startupRows[0]) return res.status(404).json({ error: "Startup not found or not yet approved." });
+
+    const { rows } = await pool.query(
+      `INSERT INTO introductions
+         (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
+          gtm_context_note, how_introduced, consent_accepted, consent_accepted_at)
+       VALUES ('GTM Partner', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested', $5, $6, true, now())
+       RETURNING *`,
+      [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null, howIntroduced || null]
+    );
+    await notifyAdmins("New partner-initiated introduction", rows[0].id);
+    res.status(201).json({ introduction: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
 
 // PUT /api/introductions/:id/opportunity — startup edits Opportunity Value
 // and/or Deal Status at any point once the request exists (addendum §2's
@@ -472,13 +579,19 @@ router.put("/introductions/:id/confirm-sale", requireRole("startup"), async (req
       return res.status(400).json({ error: `Cannot confirm a sale from status "${intro.status}".` });
     }
 
+    // 'Won' predates the 18-Sep-2026 DEAL_STATUSES list (db.js) and no
+    // longer satisfies introductions_engagement_stage_check — same class of
+    // bug the NOT VALID/normalization comments in db.js document. Use the
+    // current value, 'Closed - Won', so this write doesn't fail outright.
     const feeAmountDue = Number(dealValue) * (Number(intro.closure_rate) / 100);
+    const { partnerFeePct, partnerFeeAmount } = await computePartnerFee(intro, feeAmountDue);
     const { rows } = await pool.query(
       `UPDATE introductions
        SET deal_value = $2, po_document = $3, sale_confirmation_date = CURRENT_DATE, fee_amount_due = $4,
-           status = 'Closed - Won', engagement_stage = 'Won', updated_at = now(), updated_by = $5
+           status = 'Closed - Won', engagement_stage = 'Closed - Won', partner_fee_pct = $6, partner_fee_amount = $7,
+           updated_at = now(), updated_by = $5
        WHERE id = $1 RETURNING *`,
-      [req.params.id, dealValue, poDocument, feeAmountDue, req.user.name]
+      [req.params.id, dealValue, poDocument, feeAmountDue, req.user.name, partnerFeePct, partnerFeeAmount]
     );
     if (intro.partner_id) {
       const { rows: partnerUserRows } = await pool.query("SELECT user_id FROM partners WHERE id = $1", [intro.partner_id]);
@@ -502,8 +615,10 @@ router.put("/introductions/:id/close", requireRole("partner", "startup"), async 
     if (!intro) return res.status(404).json({ error: "Introduction not found." });
     if (!(await ownsIntro(req, intro))) return res.status(403).json({ error: "Not your introduction." });
 
+    // Same DEAL_STATUSES-vs-legacy-value fix as confirm-sale above — 'Lost'
+    // isn't a current Deal Status value, 'Closed - Lost' is.
     const status = outcome === "Lost" ? "Closed - Lost" : "Stalled";
-    const engagementStage = outcome === "Lost" ? "Lost" : "Stalled";
+    const engagementStage = outcome === "Lost" ? "Closed - Lost" : "Stalled";
     const { rows } = await pool.query(
       `UPDATE introductions SET status = $2, engagement_stage = $3, updated_at = now(), updated_by = $4 WHERE id = $1 RETURNING *`,
       [req.params.id, status, engagementStage, req.user.name]
@@ -548,6 +663,31 @@ async function ownsIntro(req, intro) {
   const { rows } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
   return intro.startup_id === rows[0]?.id;
 }
+
+// Expected GTM Success Fee (18 Sep 2026 decision): the partner's cut of
+// the closure fee, LOCKED IN at Closed-Won time rather than recomputed
+// live off the partner's current rate — so a later change to that
+// partner's default_payout_split/revenue_share_override never
+// retroactively changes a figure already shown or paid on a closed deal.
+// Only ever applies when the partner actively originated the introduction
+// via "Introduce Startup to Retailers" (initiated_by = 'GTM Partner') —
+// per the 18 Sep 2026 decision, a startup-initiated introduction pays RIV
+// in full even when the retailer happens to sit in that partner's
+// network. Shared by portal.js's confirm-sale and admin.js's manual
+// Closed-Won override so both paths compute it identically.
+async function computePartnerFee(intro, feeAmountDue) {
+  if (intro.initiated_by !== "GTM Partner" || !intro.partner_id) return { partnerFeePct: null, partnerFeeAmount: null };
+  const { rows } = await pool.query("SELECT default_payout_split, revenue_share_override FROM partners WHERE id = $1", [intro.partner_id]);
+  const partner = rows[0];
+  if (!partner) return { partnerFeePct: null, partnerFeeAmount: null };
+  const pct = Number(partner.revenue_share_override ?? partner.default_payout_split);
+  return { partnerFeePct: pct, partnerFeeAmount: Number(feeAmountDue) * (pct / 100) };
+}
+// Exposed as a property on the router (not a bare module.exports.* line,
+// which the `module.exports = router` at the bottom of this file would
+// otherwise discard) so admin.js's manual Closed-Won override can reuse
+// the exact same calculation.
+router.computePartnerFee = computePartnerFee;
 
 // Small notification-log helpers.
 async function notify(poolRef, type, introId, recipientRole, recipientProfileId) {

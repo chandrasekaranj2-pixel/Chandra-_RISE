@@ -42,6 +42,25 @@ async function request(path, { method = "GET", body } = {}) {
   return res.json();
 }
 
+// Same as request(), but sends a FormData body (multipart/form-data) with
+// no Content-Type header set manually — the browser fills in the boundary
+// itself. Used for endpoints that accept file uploads (Supporting Material
+// on Request Intro, 18 Sep 2026 addendum).
+async function requestMultipart(path, { method = "POST", formData }) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/api${path}`, { method, headers, body: formData });
+
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try { message = (await res.json()).error || message; } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}
+
 export const api = {
   login: (email, password) => request("/auth/login", { method: "POST", body: { email, password } }),
   me: () => request("/auth/me"),
@@ -57,6 +76,42 @@ export const api = {
   getIntroductions: (initiatedBy) => request(`/introductions${initiatedBy ? `?initiatedBy=${encodeURIComponent(initiatedBy)}` : ""}`),
   getIntroduction: (id) => request(`/introductions/${id}`),
   createIntroduction: (payload) => request("/introductions", { method: "POST", body: payload }),
+  // Startup's "Request Intro" only (18 Sep 2026 addendum — Supporting
+  // Material is now real file uploads, not a URL field). `files` is a
+  // plain array of File objects (max 3 — see App.jsx's
+  // MAX_SUPPORTING_MATERIAL_FILES). Sent as multipart/form-data, unlike
+  // plain createIntroduction above (still JSON, used by the GTM partner's
+  // "Introduce Startup to Retailers" form, which has no file field).
+  createIntroductionWithFiles: (payload, files = []) => {
+    const formData = new FormData();
+    Object.entries(payload).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      formData.append(key, value);
+    });
+    files.forEach((file) => formData.append("supportingMaterial", file));
+    return requestMultipart("/introductions", { formData });
+  },
+  // The backend route redirects (302) to a short-lived signed Supabase
+  // Storage URL. A plain <a href> can't carry the Authorization header
+  // this route needs, so this fetches it manually (following the
+  // redirect) and hands back the final URL for the caller to window.open.
+  async openSupportingMaterial(introId, index) {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/introductions/${introId}/supporting-material/${index}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let message = `Could not open file (${res.status})`;
+      try { message = (await res.json()).error || message; } catch {}
+      throw new Error(message);
+    }
+    window.open(res.url, "_blank", "noopener");
+  },
+  // "Confirm Introduction" (18 Sep 2026 feedback) — pairings proposed TO
+  // the logged-in partner (by RIV or a startup) that are ready for them to
+  // act on/log. Must be requested before /introductions/:id would ever be
+  // needed for this list, same route-ordering reasoning as the backend.
+  getConfirmQueue: () => request("/introductions/confirm-queue"),
   updateOpportunity: (id, payload) => request(`/introductions/${id}/opportunity`, { method: "PUT", body: payload }),
   updateCommitStatus: (id, commitStatus) => request(`/introductions/${id}/commit-status`, { method: "PUT", body: { commitStatus } }),
   confirmRequest: (id) => request(`/introductions/${id}/confirm-request`, { method: "PUT" }),
@@ -86,6 +141,7 @@ export const api = {
   deleteRetailer: (id) => request(`/admin/retailers/${id}`, { method: "DELETE" }),
   approveRetailer: (id) => request(`/admin/retailers/${id}/approve`, { method: "PUT" }),
   rejectRetailer: (id, reason) => request(`/admin/retailers/${id}/reject`, { method: "PUT", body: { reason } }),
+  markRetailerInProcess: (id) => request(`/admin/retailers/${id}/mark-in-process`, { method: "PUT" }),
   listIntroductionsAdmin: (status) => request(`/admin/introductions${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   createIntroductionAdmin: (payload) => request("/admin/introductions", { method: "POST", body: payload }),
   updateIntroductionAdmin: (id, payload) => request(`/admin/introductions/${id}`, { method: "PUT", body: payload }),

@@ -86,10 +86,75 @@ async function seed() {
     ]
   );
 
+  // ---------------------------------------------------------------------
+  // "Demo test 18/09" — a SECOND retailer plus one introduction carried
+  // all the way through the full 18-Sep-2026 workflow (GTM Partner
+  // originates it → RIV approves → partner logs the introduction →
+  // startup confirms → partner records proof → deal is progressed to
+  // Closed - Won → RIV's Expected GTM Success Fee is computed and locked).
+  // This exists purely so a client demo has one row, in every login, that
+  // already sits at the END of the lifecycle — Admin's Introductions tab,
+  // the partner's Dashboard (with a locked success fee), and the
+  // startup's "Retailer Introductions from GTM Partners" tab all show the
+  // same fully-worked deal. Every free-text field below is tagged so it's
+  // unmistakable in a demo. Uses the same partner/startup logins seeded
+  // above — no extra credentials needed.
+  // ---------------------------------------------------------------------
+  const { rows: demoRetailerRows } = await pool.query(
+    `INSERT INTO retailers (name, category, location, network_source, owning_partner_id, contact_name, contact_email, contact_phone, riv_owner, status)
+     VALUES ('Croma Retail (Demo test 18/09)', 'Consumer Electronics', 'Pune, India', 'GTM Partner', $1, 'Head of Digital, Croma', 'digital@croma-demo.demo', '+91 20 4000 0000', 'Saravana Mani', 'Active in network')
+     RETURNING id`,
+    [partnerId]
+  );
+  const demoRetailerId = demoRetailerRows[0].id;
+
+  const demoDealValue = 3000000; // ₹30L — illustrative
+  const demoClosureRate = 25;
+  const demoFeeAmountDue = (demoDealValue * demoClosureRate) / 100; // 750,000
+  const demoPartnerFeePct = 66.7; // partners.default_payout_split — "2/3rd to GTM partner" rule
+  const demoPartnerFeeAmount = (demoFeeAmountDue * demoPartnerFeePct) / 100; // ~500,250
+
+  await pool.query(
+    `INSERT INTO introductions
+       (initiated_by, partner_id, startup_id, retailer_id, network_source, request_date,
+        gtm_context_note, how_introduced, approval_status,
+        startup_agreed, startup_agreed_at, intro_rate, closure_rate,
+        status, channel, introduction_date, proof_of_introduction, follow_up_log, engagement_stage,
+        deal_value, po_document, sale_confirmation_date, fee_amount_due, partner_fee_pct, partner_fee_amount,
+        updated_by)
+     VALUES
+       ('GTM Partner', $1, $2, $3, 'GTM Partner', CURRENT_DATE - INTERVAL '30 days',
+        'Demo test 18/09 — Croma is refreshing in-store demand forecasting ahead of festive season; RDEP''s agentic layer is a direct fit for their POS/ERP stack.',
+        'Demo test 18/09 — introduced Croma''s Head of Digital to RDEP''s founder over a joint call on 20 Aug 2026.',
+        'Proof Recorded',
+        true, now() - INTERVAL '29 days', 15, $6,
+        'Closed - Won', 'Call', CURRENT_DATE - INTERVAL '27 days',
+        'Demo test 18/09 — call recording + intro email thread on file with RIV.',
+        $7::jsonb, 'Closed - Won',
+        $4, 'demo-test-18-09-po.pdf', CURRENT_DATE - INTERVAL '2 days', $5, $8, $9,
+        'Saravana Mani')`,
+    [
+      partnerId,
+      startupId,
+      demoRetailerId,
+      demoDealValue,
+      demoFeeAmountDue,
+      demoClosureRate,
+      JSON.stringify([
+        { date: new Date(Date.now() - 24 * 86400000).toISOString(), author: "Vijetha Shastry", note: "Demo test 18/09 — Croma greenlit a 4-store pilot in Pune & Mumbai." },
+        { date: new Date(Date.now() - 10 * 86400000).toISOString(), author: "RDEP Founder", note: "Demo test 18/09 — pilot results strong; Croma issued a PO for full rollout." },
+        { date: new Date(Date.now() - 2 * 86400000).toISOString(), author: "Saravana Mani", note: "Demo test 18/09 — deal closed won, PO on file, success fee computed and locked." },
+      ]),
+      demoPartnerFeePct,
+      demoPartnerFeeAmount,
+    ]
+  );
+
   console.log("Seed complete.");
   console.log("  Admin login:   admin@rise-gtm.demo / admin123");
   console.log("  Partner login: partner@rise-gtm.demo / partner123");
   console.log("  Startup login: startup@rise-gtm.demo / startup123");
+  console.log("  Plus one full-cycle 'Demo test 18/09' introduction (Croma Retail x RDEP), Closed - Won, success fee locked.");
   await pool.end();
 }
 
