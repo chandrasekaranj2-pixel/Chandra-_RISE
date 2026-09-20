@@ -1087,7 +1087,7 @@ function RetailIntroductionsInitiatedByRivView({ onOpen, refreshKey }) {
 // explicitly view-only for the startup beyond Deal Status/Opportunity
 // Value (Tab 1 & 2) and Commit Status (Tab 2), which are edited inline in
 // the table, not from this modal.
-function IntroViewDetailsModal({ intro, onClose }) {
+function IntroViewDetailsModal({ intro, onClose, isAdmin }) {
   const isRivInitiated = intro.initiated_by === "RIV Admin";
   const rows = [
     ["Retailer", intro.retailer_name],
@@ -1124,7 +1124,8 @@ function IntroViewDetailsModal({ intro, onClose }) {
   const [fileError, setFileError] = useState("");
   function openFile(index) {
     setFileError("");
-    api.openSupportingMaterial(intro.id, index).catch((e) => setFileError(e.message));
+    const opener = isAdmin ? api.openSupportingMaterialAdmin : api.openSupportingMaterial;
+    opener(intro.id, index).catch((e) => setFileError(e.message));
   }
 
   return (
@@ -1772,6 +1773,11 @@ function AdminIntroductionsView() {
   const [intros, setIntros] = useState(null);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
+  // View Details (19 Sep 2026 addendum) — lets RIV admin see an
+  // introduction's uploaded supporting material files. Intentionally
+  // admin-only: the GTM partner's own detail modal (IntroDetailModal)
+  // does not surface this and per RIV's explicit call should not.
+  const [openIntroDetails, setOpenIntroDetails] = useState(null);
   const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter]);
   useEffect(() => { load(); }, [load]);
 
@@ -1821,6 +1827,9 @@ function AdminIntroductionsView() {
               <StatusBadge status={i.status} />
             </div>
           </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <GhostButton onClick={() => setOpenIntroDetails(i)}>View Details</GhostButton>
+          </div>
           {i.approval_status === "Pending RIV Approval" && (
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
               <PrimaryButton onClick={() => approve(i.id)}>Approve</PrimaryButton>
@@ -1837,6 +1846,9 @@ function AdminIntroductionsView() {
           </div>
         </Card>
       ))}
+      {openIntroDetails && (
+        <IntroViewDetailsModal intro={openIntroDetails} onClose={() => setOpenIntroDetails(null)} isAdmin />
+      )}
     </div>
   );
 }

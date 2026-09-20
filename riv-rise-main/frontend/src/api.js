@@ -107,6 +107,22 @@ export const api = {
     }
     window.open(res.url, "_blank", "noopener");
   },
+  // Admin-only equivalent of openSupportingMaterial above, hitting the
+  // /api/admin/... route instead (19 Sep 2026 addendum — admin can view
+  // any introduction's supporting material; GTM partner intentionally
+  // still cannot, per RIV's explicit call).
+  async openSupportingMaterialAdmin(introId, index) {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/admin/introductions/${introId}/supporting-material/${index}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let message = `Could not open file (${res.status})`;
+      try { message = (await res.json()).error || message; } catch {}
+      throw new Error(message);
+    }
+    window.open(res.url, "_blank", "noopener");
+  },
   // "Confirm Introduction" (18 Sep 2026 feedback) — pairings proposed TO
   // the logged-in partner (by RIV or a startup) that are ready for them to
   // act on/log. Must be requested before /introductions/:id would ever be
