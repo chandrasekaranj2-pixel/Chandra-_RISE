@@ -46,6 +46,15 @@ const APPROVAL_COLORS = {
   "Introduced": { bg: "#E8F0FE", fg: BRAND.blue },
   "Proof Recorded": { bg: "#E6F4EA", fg: "#1E7A34" },
 };
+// 21 Sep 2026 addendum — the startup's "RIV Approval Status" column shows
+// the real approval_status flag as-is (RIV's call), EXCEPT "GTM Notified":
+// that's internal plumbing (RIV has approved and told the GTM partner) —
+// from the startup's side it just reads as "RIV Approved". Admin/partner
+// screens keep showing the raw "GTM Notified" flag; this relabeling is
+// startup-display only.
+function approvalStatusForStartup(approvalStatus) {
+  return approvalStatus === "GTM Notified" ? "RIV Approved" : approvalStatus;
+}
 // Deal Status (18 Sep 2026 addendum — Startup Retailer Introductions
 // two-tab split). Must match backend/db.js's DEAL_STATUSES exactly (kept
 // as a literal here rather than fetched, same reasoning as STATUS_COLORS
@@ -957,23 +966,6 @@ function OpportunityValueCell({ intro, onSave }) {
   );
 }
 
-// Startup Commit Status select — Tab 2 only (PRD Tab 2 items 5–8). Always
-// editable (the startup can change its mind before RIV acts on it); saving
-// fires the notify-RIV side effect on the backend.
-function CommitStatusCell({ intro, onSave, busy }) {
-  return (
-    <select
-      style={{ ...inputStyle, minWidth: 170 }}
-      value={intro.startup_commit_status || ""}
-      disabled={busy}
-      onChange={(e) => e.target.value && onSave(e.target.value)}
-    >
-      <option value="">— Select —</option>
-      {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-    </select>
-  );
-}
-
 // A lightweight responsive table shell — header row + one row per intro —
 // shared by both tabs so column layout only has to be described once per
 // tab via `columns`.
@@ -1041,7 +1033,7 @@ function RetailIntroductionsRequestedView({ refreshKey }) {
           <tr key={i.id}>
             <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
             <td style={cellStyle}>{dateStr(i.request_date)}</td>
-            <td style={cellStyle}><StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} /></td>
+            <td style={cellStyle}><StatusBadge status={approvalStatusForStartup(i.approval_status)} colors={APPROVAL_COLORS} /></td>
             <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
             <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
@@ -1070,7 +1062,6 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
-  const [savingId, setSavingId] = useState(null);
   const load = useCallback(
     () =>
       api.getIntroductions().then((r) => setIntros(r.introductions.filter((i) => i.initiated_by !== "Startup"))).catch((e) => setError(e.message)),
@@ -1082,12 +1073,6 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
     setError("");
     try { await api.updateOpportunity(id, patch); load(); }
     catch (e) { setError(e.message); }
-  }
-  async function saveCommitStatus(id, commitStatus) {
-    setError(""); setSavingId(id);
-    try { await api.updateCommitStatus(id, commitStatus); await load(); }
-    catch (e) { setError(e.message); }
-    finally { setSavingId(null); }
   }
 
   if (error) return <ErrorBanner text={error} />;
@@ -1108,7 +1093,13 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
           <tr key={i.id}>
             <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
             <td style={cellStyle}>{dateStr(i.request_date)}</td>
-            <td style={cellStyle}><CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} /></td>
+            {/* Startup Commit Status is admin-recorded (21 Sep 2026 addendum)
+                — read-only here, set from Admin > Introductions instead. */}
+            <td style={cellStyle}>
+              {i.startup_commit_status
+                ? <StatusBadge status={i.startup_commit_status} colors={COMMIT_STATUS_COLORS} />
+                : <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#B7B2AE" }}>—</span>}
+            </td>
             <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
             <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
@@ -1922,6 +1913,14 @@ function AdminIntroductionsView() {
     try { await api.updateIntroductionAdmin(id, { approvalStatus: "Startup Confirmed" }); load(); }
     catch (e) { setError(e.message); }
   }
+  // 21 Sep 2026 addendum — Startup Commit Status (Tab 2 in the startup
+  // login) moved to admin-recorded, per RIV's call. Admin sets it here
+  // based on what the startup told them.
+  async function setCommitStatus(id, startupCommitStatus) {
+    setError("");
+    try { await api.updateIntroductionAdmin(id, { startupCommitStatus }); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
@@ -1970,6 +1969,15 @@ function AdminIntroductionsView() {
           )}
           {!i.partner_id && i.approval_status === "Startup Confirmed" && (
             <RivDirectProofRow onSubmit={(proof) => logProofDirect(i.id, proof)} />
+          )}
+          {i.initiated_by !== "Startup" && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.3 }}>Startup Commit Status</div>
+              <select style={{ ...inputStyle, width: 260 }} value={i.startup_commit_status || ""} onChange={(e) => e.target.value && setCommitStatus(i.id, e.target.value)}>
+                <option value="">— Select —</option>
+                {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
           )}
           <div style={{ marginTop: 10 }}>
             <select style={{ ...inputStyle, width: 260 }} value={i.status} onChange={(e) => setStatus(i.id, e.target.value)}>
