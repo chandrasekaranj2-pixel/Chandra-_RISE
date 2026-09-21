@@ -446,10 +446,22 @@ router.post("/introductions", async (req, res, next) => {
 });
 
 // PUT /api/admin/introductions/:id/approve — RIV reviews and approves a
-// request (addendum §3, step 2). Skips straight to "Startup Confirmed"
-// when there's no GTM partner in the loop (RIV Direct retailer) since
-// there's no one to notify in between; otherwise notifies the partner and
-// waits for the startup's separate confirm-request call.
+// request (addendum §3, step 2).
+//
+// Three cases for what approval_status moves to next:
+//   - No GTM partner in the loop (RIV Direct retailer) -> "Startup
+//     Confirmed" directly, since there's no one to notify in between.
+//   - GTM-network retailer, but the STARTUP initiated this request
+//     themselves (Scenario A) -> also straight to "Startup Confirmed"
+//     (21 Sep 2026 business-workflow revision). The startup already
+//     showed interest by requesting it, so a second confirm step just
+//     forces Admin into a manual "Mark Startup Confirmed" click for every
+//     row with no real signal to act on — removed as a pure bottleneck.
+//   - GTM-network retailer, and a GTM PARTNER proposed the pairing
+//     (Scenario D, "Check Introduction Interest") -> still "GTM Notified"
+//     first; the startup hasn't been asked anything yet in this case, so
+//     RIV/Admin still needs to confirm their interest before the partner
+//     acts (via "Mark Startup Confirmed" below) — unchanged.
 router.put("/introductions/:id/approve", async (req, res, next) => {
   try {
     const { rows: introRows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
@@ -458,14 +470,16 @@ router.put("/introductions/:id/approve", async (req, res, next) => {
     if (intro.approval_status !== "Pending RIV Approval") {
       return res.status(400).json({ error: `Cannot approve from approval status "${intro.approval_status}".` });
     }
-    const nextStatus = intro.partner_id ? "GTM Notified" : "Startup Confirmed";
+    const skipGtmNotified = !intro.partner_id || intro.initiated_by === "Startup";
+    const nextStatus = skipGtmNotified ? "Startup Confirmed" : "GTM Notified";
     const { rows } = await pool.query(
       `UPDATE introductions SET approval_status = $2, updated_at = now(), updated_by = $3 WHERE id = $1 RETURNING *`,
       [req.params.id, nextStatus, req.user.name]
     );
     if (intro.partner_id) {
       await notifyPartner(intro.partner_id, "Status updated", intro.id);
-    } else {
+    }
+    if (!intro.partner_id || intro.initiated_by === "Startup") {
       await notifyStartup(intro.startup_id, "Status updated", intro.id);
     }
     res.json({ introduction: rows[0] });
