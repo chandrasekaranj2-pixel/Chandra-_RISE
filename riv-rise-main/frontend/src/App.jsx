@@ -1003,7 +1003,7 @@ const cellStyle = { padding: "12px 14px", fontFamily: FONT, fontSize: 13, color:
 // Tab 1 — Retailer Introductions Requested (PRD "Screen 1"). Startup-
 // initiated requests; RIV controls approval + introduction, startup only
 // ever edits Deal Status / Opportunity Value, and only once Introduced.
-function RetailIntroductionsRequestedView({ onOpen, refreshKey }) {
+function RetailIntroductionsRequestedView({ refreshKey }) {
   const [intros, setIntros] = useState(null);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -1032,7 +1032,7 @@ function RetailIntroductionsRequestedView({ onOpen, refreshKey }) {
         Start a new introduction request from Retailer Directory.
       </div>
       <IntroTable
-        columns={["Retailer Name", "Requested Date", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
+        columns={["Retailer Name", "Requested Date", "RIV Approval Status", "Introduction Status", "Deal Status", "Opportunity Value"]}
         rows={rows}
         emptyIcon={ClipboardList}
         emptyTitle={intros.length ? "No requests match your search" : "No introduction requests yet"}
@@ -1041,12 +1041,10 @@ function RetailIntroductionsRequestedView({ onOpen, refreshKey }) {
           <tr key={i.id}>
             <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
             <td style={cellStyle}>{dateStr(i.request_date)}</td>
-            <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
+            <td style={cellStyle}><StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} /></td>
             <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
             <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
-            <td style={cellStyle}>{dateStr(i.updated_at)}</td>
-            <td style={cellStyle}><GhostButton onClick={() => onOpen(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
           </tr>
         )}
       />
@@ -1067,13 +1065,12 @@ function RetailIntroductionsRequestedView({ onOpen, refreshKey }) {
 // approved and the startup's confirmation is what's pending
 // (approval_status = 'GTM Notified'), an inline Confirm action in the
 // same cell.
-function RetailIntroductionsInitiatedByRivView({ onOpen, refreshKey }) {
+function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
   const [intros, setIntros] = useState(null);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [savingId, setSavingId] = useState(null);
-  const [busyId, setBusyId] = useState(null);
   const load = useCallback(
     () =>
       api.getIntroductions().then((r) => setIntros(r.introductions.filter((i) => i.initiated_by !== "Startup"))).catch((e) => setError(e.message)),
@@ -1092,12 +1089,6 @@ function RetailIntroductionsInitiatedByRivView({ onOpen, refreshKey }) {
     catch (e) { setError(e.message); }
     finally { setSavingId(null); }
   }
-  async function confirm(id) {
-    setError(""); setBusyId(id);
-    try { await api.confirmRequest(id); await load(); }
-    catch (e) { setError(e.message); }
-    finally { setBusyId(null); }
-  }
 
   if (error) return <ErrorBanner text={error} />;
   if (!intros) return <Spinner />;
@@ -1108,38 +1099,21 @@ function RetailIntroductionsInitiatedByRivView({ onOpen, refreshKey }) {
       <ErrorBanner text={error} />
       <IntroSearchBar search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} />
       <IntroTable
-        columns={["Retailer Name", "Partner", "Initiated Date", "Startup Commit Status", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
+        columns={["Retailer Name", "Initiated Date", "Startup Commit Status", "Introduction Status", "Deal Status", "Opportunity Value"]}
         rows={rows}
         emptyIcon={Handshake}
         emptyTitle={intros.length ? "No opportunities match your search" : "No opportunities yet"}
         emptyText={intros.length ? "Try a different retailer name or status." : "Opportunities RIV identifies for you will appear here."}
-        renderRow={(i) => {
-          const isPartnerInitiated = i.initiated_by === "GTM Partner";
-          return (
-            <tr key={i.id}>
-              <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
-              <td style={cellStyle}>{isPartnerInitiated ? (i.partner_name || "—") : "RIV Admin"}</td>
-              <td style={cellStyle}>{dateStr(i.request_date)}</td>
-              <td style={cellStyle}>
-                {isPartnerInitiated ? (
-                  i.approval_status === "GTM Notified" ? (
-                    <PrimaryButton disabled={busyId === i.id} onClick={() => confirm(i.id)} style={{ padding: "6px 12px" }}>Confirm</PrimaryButton>
-                  ) : (
-                    <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
-                  )
-                ) : (
-                  <CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} />
-                )}
-              </td>
-              <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
-              <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
-              <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
-              <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
-              <td style={cellStyle}>{dateStr(i.updated_at)}</td>
-              <td style={cellStyle}><GhostButton onClick={() => onOpen(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
-            </tr>
-          );
-        }}
+        renderRow={(i) => (
+          <tr key={i.id}>
+            <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
+            <td style={cellStyle}>{dateStr(i.request_date)}</td>
+            <td style={cellStyle}><CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} /></td>
+            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
+            <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+            <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+          </tr>
+        )}
       />
     </div>
   );
@@ -1938,6 +1912,16 @@ function AdminIntroductionsView() {
     try { await api.updateIntroductionAdmin(id, { approvalStatus: "Proof Recorded", proofOfIntroduction, status: "Introduced" }); load(); }
     catch (e) { setError(e.message); }
   }
+  // 21 Sep 2026 addendum — the startup's own "Confirm introduction" step
+  // was removed from their login (per RIV's call), so a GTM-partner
+  // introduction sitting at "GTM Notified" now has no way forward on its
+  // own. RIV admin advances it manually here once they know the startup
+  // is on board, so the partner can go on to log proof.
+  async function markStartupConfirmed(id) {
+    setError("");
+    try { await api.updateIntroductionAdmin(id, { approvalStatus: "Startup Confirmed" }); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
@@ -1976,6 +1960,12 @@ function AdminIntroductionsView() {
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
               <PrimaryButton onClick={() => approve(i.id)}>Approve</PrimaryButton>
               <GhostButton onClick={() => reject(i.id)}>Reject</GhostButton>
+            </div>
+          )}
+          {i.approval_status === "GTM Notified" && (
+            <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+              <PrimaryButton onClick={() => markStartupConfirmed(i.id)}>Mark Startup Confirmed</PrimaryButton>
+              <span style={{ fontFamily: FONT, fontSize: 11, color: "#9B958F" }}>Once you know the startup is on board — they no longer confirm this themselves.</span>
             </div>
           )}
           {!i.partner_id && i.approval_status === "Startup Confirmed" && (
@@ -2084,7 +2074,6 @@ export default function RiseGtmApp() {
   const [user, setUser] = useState(() => getStoredUser());
   const [view, setView] = useState(null);
   const [openIntro, setOpenIntro] = useState(null);
-  const [openIntroDetails, setOpenIntroDetails] = useState(null);
   const [requestRetailer, setRequestRetailer] = useState(null);
   const [showAddRetailer, setShowAddRetailer] = useState(false);
   const [detailStartupId, setDetailStartupId] = useState(null);
@@ -2131,10 +2120,10 @@ export default function RiseGtmApp() {
         )}
         {user.role === "partner" && view === "dashboard" && <PartnerDashboardView refreshKey={refreshKey} />}
         {user.role === "startup" && view === "introductions-requested" && (
-          <RetailIntroductionsRequestedView onOpen={setOpenIntroDetails} refreshKey={refreshKey} />
+          <RetailIntroductionsRequestedView refreshKey={refreshKey} />
         )}
         {user.role === "startup" && view === "introductions-initiated" && (
-          <RetailIntroductionsInitiatedByRivView onOpen={setOpenIntroDetails} refreshKey={refreshKey} />
+          <RetailIntroductionsInitiatedByRivView refreshKey={refreshKey} />
         )}
         {user.role === "startup" && view === "retailers" && <RetailerDirectoryView user={user} onRequest={setRequestRetailer} />}
 
@@ -2148,7 +2137,6 @@ export default function RiseGtmApp() {
       </div>
 
       {openIntro && <IntroDetailModal intro={openIntro} user={user} onClose={() => setOpenIntro(null)} onRefresh={async () => refresh()} />}
-      {openIntroDetails && <IntroViewDetailsModal intro={openIntroDetails} onClose={() => setOpenIntroDetails(null)} />}
       {requestRetailer && <RequestIntroductionModal retailer={requestRetailer} onClose={() => setRequestRetailer(null)} onCreated={async () => refresh()} />}
       {showAddRetailer && <AddRetailerModal onClose={() => setShowAddRetailer(false)} onCreated={async () => refresh()} />}
       {detailStartupId && <StartupDetailModal startupId={detailStartupId} onClose={() => setDetailStartupId(null)} />}
