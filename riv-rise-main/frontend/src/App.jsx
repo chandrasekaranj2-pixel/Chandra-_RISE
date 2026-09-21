@@ -97,6 +97,36 @@ const RETAILER_STATUS_COLORS = {
 const RETAILER_STATUS_LABELS = { "Prospect": "Submitted for review" };
 function retailerStatusLabel(status) { return RETAILER_STATUS_LABELS[status] || status; }
 
+// Simplified two-part status display (19 Sep 2026 feedback) — GTM/admin/
+// startup all previously saw the raw approval_status chain (Pending RIV
+// Approval / GTM Notified / Startup Confirmed / Proof Recorded / Rejected)
+// and the separate legacy `status` column (Requested / Introduced / In
+// Progress / ...) side by side, which was accurate but not businessfriendly.
+// These two derived labels collapse each into a 2-3 value read the whole
+// portal now shows consistently: "Introduction interest status" (from
+// approval_status) and "Actual Introduction status" (from status). The
+// underlying columns/values are unchanged — this is a display-only layer,
+// so every other place that reads approval_status/status directly (e.g.
+// gating which action a role can take) is untouched.
+const INTEREST_STATUS_COLORS = {
+  "Awaiting Startup interest": { bg: "#FFF4E0", fg: "#B8790A" },
+  "Startup interested": { bg: "#EFE9FB", fg: "#6B3FBF" },
+  "Startup Not interested": { bg: "#FBEAEA", fg: BRAND.coralDark },
+};
+function interestStatusFor(approvalStatus) {
+  if (approvalStatus === "Rejected") return "Startup Not interested";
+  if (["Startup Confirmed", "Introduced", "Proof Recorded"].includes(approvalStatus)) return "Startup interested";
+  return "Awaiting Startup interest"; // Pending RIV Approval, RIV Approved, GTM Notified, anything else
+}
+const INTRODUCED_STATUS_COLORS = {
+  "Yet to introduce": { bg: "#F3F1EE", fg: "#8A857F" },
+  "Introduced": { bg: "#E8F0FE", fg: BRAND.blue },
+};
+function introducedStatusFor(status) {
+  if (["Requested", "Pending Startup Agreement", "Approved"].includes(status)) return "Yet to introduce";
+  return "Introduced"; // Introduced, In Progress, Closed - Won/Lost, Stalled, Invoiced, Paid, Payout Complete
+}
+
 /* =========================================================================
    UI PRIMITIVES
    ========================================================================= */
@@ -193,6 +223,16 @@ function Modal({ title, onClose, children, width = 480 }) {
 function money(n) {
   if (n === null || n === undefined || n === "") return "—";
   return `₹${Number(n).toLocaleString("en-IN")}`;
+}
+// Expected GTM Success Fee only (19 Sep 2026 feedback) — the underlying
+// partner_fee_amount is stored/computed in ₹ same as every other amount
+// in this app; this converts just that one display to $ at a fixed
+// ₹83 = $1 rate. Nothing else in the app uses this — everywhere else
+// still shows ₹ via money() above.
+const USD_PER_INR = 1 / 83;
+function usdFee(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  return `$${(Number(n) * USD_PER_INR).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 function dateStr(d) {
   if (!d) return "—";
@@ -360,7 +400,8 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
     <Modal title={`${intro.startup_name} → ${intro.retailer_name}`} onClose={onClose} width={560}>
       <ErrorBanner text={error} />
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <StatusBadge status={intro.approval_status} colors={APPROVAL_COLORS} />
+        <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />
+        <StatusBadge status={introducedStatusFor(intro.status)} colors={INTRODUCED_STATUS_COLORS} />
         {intro.engagement_stage && <StatusBadge status={intro.engagement_stage} />}
         <span style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>
           {intro.partner_name ? `Partner: ${intro.partner_name}` : "RIV direct"} · Intro rate {intro.intro_rate}% / Closure rate {intro.closure_rate}%
@@ -732,11 +773,27 @@ function RequestIntroductionModal({ retailer, onClose, onCreated }) {
 
 // Retailer Directory (startup browsing) / My Retailers (partner) — same
 // list endpoint, different framing and actions per role (addendum §1).
+//
+// 19 Sep 2026 feedback — for a partner, each retailer card now also lists
+// that retailer's own introductions (one row per startup pairing) with
+// the two simplified statuses, since a retailer can have several
+// introductions against different startups at once.
 function RetailerDirectoryView({ user, onRequest }) {
   const [retailers, setRetailers] = useState(null);
+  const [introsByRetailer, setIntrosByRetailer] = useState({});
   const [error, setError] = useState("");
   const load = useCallback(() => api.getRetailers().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (user.role !== "partner") return;
+    api.getIntroductions().then((r) => {
+      const byRetailer = {};
+      for (const i of r.introductions) {
+        (byRetailer[i.retailer_id] ||= []).push(i);
+      }
+      setIntrosByRetailer(byRetailer);
+    }).catch((e) => setError(e.message));
+  }, [user.role]);
   if (error) return <ErrorBanner text={error} />;
   if (!retailers) return <Spinner />;
   if (!retailers.length) return (
@@ -745,30 +802,46 @@ function RetailerDirectoryView({ user, onRequest }) {
   );
   return (
     <div>
-      {retailers.map((r) => (
-        <Card key={r.id} style={{ padding: 16, marginBottom: 10 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14 }}>
-            <div>
-              <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{r.brand || r.name}</div>
-              <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{r.category} · {r.location}{r.hq_country ? `, ${r.hq_country}` : ""}</div>
+      {retailers.map((r) => {
+        const retailerIntros = introsByRetailer[r.id] || [];
+        return (
+          <Card key={r.id} style={{ padding: 16, marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14 }}>
+              <div>
+                <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{r.brand || r.name}</div>
+                <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{r.category} · {r.location}{r.hq_country ? `, ${r.hq_country}` : ""}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                {user.role === "partner" && <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabel(r.status)} />}
+                {user.role === "startup" && <PrimaryButton icon={Send} onClick={() => onRequest(r)}>Request intro</PrimaryButton>}
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-              {user.role === "partner" && <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabel(r.status)} />}
-              {user.role === "startup" && <PrimaryButton icon={Send} onClick={() => onRequest(r)}>Request intro</PrimaryButton>}
-            </div>
-          </div>
-          {user.role === "partner" && r.status === "Rejected" && r.rejection_reason && (
-            <div style={{ fontFamily: FONT, fontSize: 12, color: BRAND.coralDark, background: "#FBEAEA", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
-              RIV's note: {r.rejection_reason}
-            </div>
-          )}
-          {user.role === "partner" && r.status === "Duplicate" && (
-            <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
-              This looks similar to a retailer already on file — RIV will review before approving.
-            </div>
-          )}
-        </Card>
-      ))}
+            {user.role === "partner" && r.status === "Rejected" && r.rejection_reason && (
+              <div style={{ fontFamily: FONT, fontSize: 12, color: BRAND.coralDark, background: "#FBEAEA", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
+                RIV's note: {r.rejection_reason}
+              </div>
+            )}
+            {user.role === "partner" && r.status === "Duplicate" && (
+              <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
+                This looks similar to a retailer already on file — RIV will review before approving.
+              </div>
+            )}
+            {user.role === "partner" && !!retailerIntros.length && (
+              <div style={{ marginTop: 12, borderTop: `1px solid ${BRAND.line}`, paddingTop: 10 }}>
+                {retailerIntros.map((i) => (
+                  <div key={i.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{i.startup_name}</span>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
+                      <StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -959,7 +1032,7 @@ function RetailIntroductionsRequestedView({ onOpen, refreshKey }) {
         Start a new introduction request from Retailer Directory.
       </div>
       <IntroTable
-        columns={["Retailer Name", "Requested Date", "RIV Approval Status", "Introduction Status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
+        columns={["Retailer Name", "Requested Date", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
         rows={rows}
         emptyIcon={ClipboardList}
         emptyTitle={intros.length ? "No requests match your search" : "No introduction requests yet"}
@@ -968,8 +1041,8 @@ function RetailIntroductionsRequestedView({ onOpen, refreshKey }) {
           <tr key={i.id}>
             <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
             <td style={cellStyle}>{dateStr(i.request_date)}</td>
-            <td style={cellStyle}><StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} /></td>
-            <td style={cellStyle}><StatusBadge status={i.status} /></td>
+            <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
+            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
             <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
             <td style={cellStyle}>{dateStr(i.updated_at)}</td>
@@ -1035,7 +1108,7 @@ function RetailIntroductionsInitiatedByRivView({ onOpen, refreshKey }) {
       <ErrorBanner text={error} />
       <IntroSearchBar search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} />
       <IntroTable
-        columns={["Retailer Name", "Partner", "Initiated Date", "Startup Commit Status", "Introduction Status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
+        columns={["Retailer Name", "Partner", "Initiated Date", "Startup Commit Status", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Last Updated", ""]}
         rows={rows}
         emptyIcon={Handshake}
         emptyTitle={intros.length ? "No opportunities match your search" : "No opportunities yet"}
@@ -1058,7 +1131,8 @@ function RetailIntroductionsInitiatedByRivView({ onOpen, refreshKey }) {
                   <CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} />
                 )}
               </td>
-              <td style={cellStyle}><StatusBadge status={i.status} /></td>
+              <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
+              <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
               <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
               <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
               <td style={cellStyle}>{dateStr(i.updated_at)}</td>
@@ -1085,8 +1159,8 @@ function IntroViewDetailsModal({ intro, onClose, isAdmin }) {
     ["Category", intro.retailer_category],
     ["Network", intro.partner_name ? `via ${intro.partner_name}` : "RIV direct"],
     [isRivInitiated ? "Initiated Date" : "Requested Date", dateStr(intro.request_date)],
-    ...(isRivInitiated ? [] : [["RIV Approval Status", intro.approval_status]]),
-    ["Introduction Status", intro.status],
+    ...(isRivInitiated ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
+    ["Actual Introduction status", introducedStatusFor(intro.status)],
     ["Deal Status", intro.engagement_stage || "—"],
     ["Opportunity Value", money(intro.opportunity_value)],
     ...(isRivInitiated ? [["Startup Commit Status", intro.startup_commit_status || "Not yet responded"]] : []),
@@ -1305,7 +1379,10 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{i.startup_name} <ArrowRight size={12} style={{ margin: "0 4px", verticalAlign: "middle" }} /> {i.retailer_name}</div>
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>Requested {dateStr(i.request_date)}</div>
           </div>
-          <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
+            <StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} />
+          </div>
         </Card>
       ))}
     </div>
@@ -1468,7 +1545,7 @@ function PartnerDashboardView({ refreshKey }) {
 
   return (
     <IntroTable
-      columns={["Retailer", "Startup", "RIV Introduction Approval Status", "Introduction Status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee"]}
+      columns={["Retailer", "Startup", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee"]}
       rows={intros}
       emptyIcon={Handshake}
       emptyTitle="No introductions yet"
@@ -1477,11 +1554,11 @@ function PartnerDashboardView({ refreshKey }) {
         <tr key={i.id}>
           <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
           <td style={cellStyle}>{i.startup_name}</td>
-          <td style={cellStyle}><StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} label={i.approval_status === "RIV Approved" ? "Approved by RIV" : undefined} /></td>
-          <td style={cellStyle}><StatusBadge status={i.status} label={i.status === "Introduced" ? "Retailer and Startup introduced" : undefined} /></td>
+          <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
+          <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
           <td style={cellStyle}>{i.engagement_stage ? <StatusBadge status={i.engagement_stage} colors={DEAL_STATUS_COLORS} /> : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
           <td style={cellStyle}>{money(i.opportunity_value)}</td>
-          <td style={cellStyle}>{expectedFee(i) != null ? money(expectedFee(i)) : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
+          <td style={cellStyle}>{expectedFee(i) != null ? usdFee(expectedFee(i)) : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
         </tr>
       )}
     />
@@ -1882,10 +1959,15 @@ function AdminIntroductionsView() {
                 {i.partner_name ? `via ${i.partner_name}` : "RIV direct"} · Requested {dateStr(i.request_date)}{i.deal_value ? ` · Deal ${money(i.deal_value)} · Fee ${money(i.fee_amount_due)}` : ""}
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
-              <StatusBadge status={i.status} />
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
+              <StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} />
             </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+            <span style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE" }}>Detail:</span>
+            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
+            <StatusBadge status={i.status} />
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <GhostButton onClick={() => setOpenIntroDetails(i)}>View Details</GhostButton>
