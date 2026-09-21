@@ -83,6 +83,29 @@ async function uploadSupportingMaterial(files, { startupId }) {
   return uploaded;
 }
 
+// Uploads the single "proof of introduction" screenshot/PDF a GTM partner
+// attaches when logging an introduction (19 Sep 2026 feedback — Submit
+// Proof of Startup-Retailer Introduction). Same bucket and client as
+// uploadSupportingMaterial above, different key prefix so the two kinds of
+// file never collide. Returns the single {name, path, size, mime_type}
+// object to store in introductions.proof_attachment.
+async function uploadProofAttachment(file, { introId }) {
+  if (!file) return null;
+  const s3 = getClient();
+  const path = `introductions/${introId}/proof/${Date.now()}-${sanitizeFilename(file.originalname)}`;
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: path,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+    }));
+  } catch (err) {
+    throw new Error(`Failed to upload "${file.originalname}": ${err.message}`);
+  }
+  return { name: file.originalname, path, size: file.size, mime_type: file.mimetype };
+}
+
 // Generates a short-lived signed URL for one stored file, for the download
 // routes to redirect to. Never stored — regenerated per request.
 async function getSignedUrl(path) {
@@ -98,4 +121,4 @@ async function getSignedUrl(path) {
   }
 }
 
-module.exports = { uploadSupportingMaterial, getSignedUrl, BUCKET };
+module.exports = { uploadSupportingMaterial, uploadProofAttachment, getSignedUrl, BUCKET };

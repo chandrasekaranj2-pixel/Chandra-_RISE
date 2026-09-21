@@ -12,7 +12,8 @@ const { Router } = require("express");
 const { pool, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
 const { requireAuth, requireRole } = require("../middleware/auth.js");
 const { handleSupportingMaterialUpload } = require("../lib/supportingMaterialUpload.js");
-const { uploadSupportingMaterial, getSignedUrl } = require("../lib/supportingMaterialStorage.js");
+const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
+const { uploadSupportingMaterial, uploadProofAttachment, getSignedUrl } = require("../lib/supportingMaterialStorage.js");
 
 const router = Router();
 router.use(requireAuth);
@@ -293,7 +294,7 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
           why_interested, problem_solved, relevant_offering, buyer_persona, previously_engaged,
           prior_engagement_details, supporting_material, consent_accepted, consent_accepted_at)
        VALUES ('Startup', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested',
-               $5, $6, $7, $8, $9, $10, $11, true, now())
+               $5, $6, $7, $8, $9, $10, $11::jsonb, true, now())
        RETURNING *`,
       [partnerId, startupId, retailerId, retailer.network_source,
        whyInterested || null, problemSolved || null, relevantOffering || null, buyerPersona || null,
@@ -329,21 +330,28 @@ router.get("/introductions/:id/supporting-material/:index", requireRole("partner
   }
 });
 
-// "Introduce Startup to Retailers" (18 Sep 2026 feedback) — a GTM partner
-// proposes a retailer x startup pairing. Fields mirror the RISE
-// Introduction Submission Form by GTM Partners (Bigin) — name/email are
-// the logged-in partner, so only the pairing + opportunity context are
-// collected here. Both retailer and startup must already be approved
-// (Active in network / Active) — enforced server-side, not just by the
-// dropdown only offering approved options client-side. Always lands at
-// 'Pending RIV Approval' like every other introduction; this is what
-// makes the partner eligible for the Expected GTM Success Fee later (see
-// computePartnerFee below) since initiated_by is set to 'GTM Partner'.
+// "Check Introduction Interest with the Startup" (18 Sep 2026 feedback,
+// renamed + reworked 19 Sep 2026) — a GTM partner proposes a retailer x
+// startup pairing, to check whether RIV/the startup are interested.
+// Fields mirror the RISE Introduction Submission Form by GTM Partners
+// (Bigin) — name/email are the logged-in partner, so only the pairing +
+// opportunity context are collected here. Both retailer and startup must
+// already be approved (Active in network / Active) — enforced server-side,
+// not just by the dropdown only offering approved options client-side.
+// Always lands at 'Pending RIV Approval' like every other introduction;
+// this is what makes the partner eligible for the Expected GTM Success
+// Fee later (see computePartnerFee below) since initiated_by is set to
+// 'GTM Partner'.
+//
+// 19 Sep 2026 feedback moved "how introduced" + the facilitation
+// declaration to the separate proof-of-introduction step (see
+// PUT /introductions/:id/log-introduction below) — at THIS step nothing
+// has actually happened yet, it's just a check of interest, so neither is
+// collected or required here any more.
 async function createPartnerInitiatedIntroduction(req, res, next) {
   try {
-    const { retailerId, startupId, opportunityContext, howIntroduced, declarationAccepted } = req.body || {};
+    const { retailerId, startupId, opportunityContext } = req.body || {};
     if (!retailerId || !startupId) return res.status(400).json({ error: "Select both a retailer and a startup." });
-    if (!declarationAccepted) return res.status(400).json({ error: "You must confirm you have personally facilitated this introduction." });
 
     const { rows: p } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
     const partnerId = p[0]?.id;
@@ -359,10 +367,10 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
     const { rows } = await pool.query(
       `INSERT INTO introductions
          (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
-          gtm_context_note, how_introduced, consent_accepted, consent_accepted_at)
-       VALUES ('GTM Partner', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested', $5, $6, true, now())
+          gtm_context_note, consent_accepted, consent_accepted_at)
+       VALUES ('GTM Partner', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested', $5, true, now())
        RETURNING *`,
-      [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null, howIntroduced || null]
+      [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null]
     );
     await notifyAdmins("New partner-initiated introduction", rows[0].id);
     res.status(201).json({ introduction: rows[0] });
@@ -506,10 +514,22 @@ router.put("/introductions/:id/agree", requireRole("startup"), async (req, res, 
 // PUT /api/introductions/:id/log-introduction — GTM partner (or RIV admin,
 // via admin.js) logs the actual introduction with proof (PRD §6.3 step 7).
 // Proof is required before status can move to "Introduced" (§7).
-router.put("/introductions/:id/log-introduction", requireRole("partner"), async (req, res, next) => {
+//
+// 19 Sep 2026 feedback ("Submit Proof of Startup-Retailer Introduction"):
+// proof is now an attached screenshot/PDF (multipart/form-data, field
+// "proofAttachment") rather than a free-text description — see
+// proofAttachmentUpload.js and uploadProofAttachment above. The
+// facilitation declaration also moved here from the "check interest" step
+// (createPartnerInitiatedIntroduction above), since it only makes sense
+// once an introduction has actually happened. proof_of_introduction
+// (TEXT) is still set, to the file's name, so every existing display of
+// that column keeps showing something readable.
+router.put("/introductions/:id/log-introduction", requireRole("partner"), handleProofAttachmentUpload, async (req, res, next) => {
   try {
-    const { channel, introductionDate, proofOfIntroduction } = req.body || {};
-    if (!proofOfIntroduction) return res.status(400).json({ error: "Proof of introduction is required before this can be logged." });
+    const { channel, introductionDate, declarationAccepted } = req.body || {};
+    if (!req.file) return res.status(400).json({ error: "Attach proof of introduction (a screenshot or PDF) before this can be logged." });
+    // Sent as a multipart form field, so it arrives as the string "true".
+    if (declarationAccepted !== "true") return res.status(400).json({ error: "You must confirm you have personally facilitated this introduction." });
 
     const { rows: p } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
     const { rows: introRows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
@@ -519,15 +539,40 @@ router.put("/introductions/:id/log-introduction", requireRole("partner"), async 
       return res.status(400).json({ error: `Cannot log an introduction from approval status "${intro.approval_status}" — the startup must confirm first.` });
     }
 
+    // Upload before the UPDATE, same reasoning as POST /introductions
+    // above — a storage failure shouldn't leave a row claiming proof it
+    // doesn't have.
+    const proofAttachment = await uploadProofAttachment(req.file, { introId: req.params.id });
+
     const { rows } = await pool.query(
       `UPDATE introductions
        SET channel = $2, introduction_date = COALESCE($3, CURRENT_DATE), proof_of_introduction = $4,
-           status = 'Introduced', approval_status = 'Proof Recorded', updated_at = now(), updated_by = $5
+           proof_attachment = $5::jsonb, status = 'Introduced', approval_status = 'Proof Recorded',
+           updated_at = now(), updated_by = $6
        WHERE id = $1 RETURNING *`,
-      [req.params.id, channel || "Email", introductionDate || null, proofOfIntroduction, req.user.name]
+      [req.params.id, channel || "Email", introductionDate || null, proofAttachment.name, JSON.stringify(proofAttachment), req.user.name]
     );
     await notify(pool, "Introduction made", req.params.id, "startup", intro.startup_id);
     res.json({ introduction: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/introductions/:id/proof-attachment — redirects to a
+// freshly-signed download link for the proof-of-introduction file logged
+// above. Same owner-scoping pattern as the supporting-material route; the
+// admin-unscoped equivalent lives in admin.js.
+router.get("/introductions/:id/proof-attachment", requireRole("partner", "startup"), async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
+    const intro = rows[0];
+    if (!intro) return res.status(404).json({ error: "Introduction not found." });
+    if (!(await ownsIntro(req, intro))) return res.status(403).json({ error: "Not your introduction." });
+    if (!intro.proof_attachment) return res.status(404).json({ error: "No proof attachment on file." });
+
+    const url = await getSignedUrl(intro.proof_attachment.path);
+    res.redirect(url);
   } catch (err) {
     next(err);
   }

@@ -410,6 +410,22 @@ router.get("/introductions/:id/supporting-material/:index", async (req, res, nex
   }
 });
 
+// GET /api/admin/introductions/:id/proof-attachment — admin equivalent of
+// the owner-scoped download route in portal.js (19 Sep 2026 feedback —
+// Submit Proof of Startup-Retailer Introduction).
+router.get("/introductions/:id/proof-attachment", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT proof_attachment FROM introductions WHERE id = $1", [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
+    if (!rows[0].proof_attachment) return res.status(404).json({ error: "No proof attachment on file." });
+
+    const url = await getSignedUrl(rows[0].proof_attachment.path);
+    res.redirect(url);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/admin/introductions — RIV admin makes a direct introduction.
 router.post("/introductions", async (req, res, next) => {
   try {

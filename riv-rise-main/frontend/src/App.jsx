@@ -328,18 +328,11 @@ function IntroCard({ intro, onOpen }) {
 function IntroDetailModal({ intro, user, onClose, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [proof, setProof] = useState("");
-  const [channel, setChannel] = useState("Email");
   const [followUpNote, setFollowUpNote] = useState("");
   const [engagementStage, setEngagementStage] = useState(intro.engagement_stage || "");
   const [dealValue, setDealValue] = useState("");
   const [poDocument, setPoDocument] = useState("");
-  // Log-introduction acknowledgement (19 Sep 2026 feedback) — unlike the
-  // other actions in this modal, which just close on success, "Log the
-  // introduction" is the action the Confirm Introduction dropdowns route
-  // the partner into, so it needs its own explicit confirmation rather
-  // than silently closing.
-  const [loggedAck, setLoggedAck] = useState(false);
+  const [proofFileError, setProofFileError] = useState("");
 
   const isPartner = user.role === "partner";
   const isStartup = user.role === "startup";
@@ -352,14 +345,15 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
     finally { setBusy(false); }
   }
 
-  async function submitLogIntroduction() {
-    setError(""); setBusy(true);
-    try {
-      await api.logIntroduction(intro.id, { channel, proofOfIntroduction: proof });
-      await onRefresh();
-      setLoggedAck(true);
-    } catch (err) { setError(err.message || "Something went wrong."); }
-    finally { setBusy(false); }
+  // 19 Sep 2026 feedback — logging proof of introduction moved out of this
+  // modal onto its own page-level "Submit Proof of Startup-Retailer
+  // Introduction" section (see SubmitProofOfIntroductionSection), since
+  // proof is now an attached file rather than free text. This modal just
+  // shows what was logged, with a link to open the attachment.
+  function openProofFile() {
+    setProofFileError("");
+    const opener = isAdmin ? api.openProofAttachmentAdmin : api.openProofAttachment;
+    opener(intro.id).catch((e) => setProofFileError(e.message));
   }
 
   return (
@@ -386,6 +380,19 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
       {intro.proof_of_introduction && (
         <div style={{ marginBottom: 14, fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>
           <strong>Proof of introduction</strong> ({intro.channel}, {dateStr(intro.introduction_date)}): {intro.proof_of_introduction}
+          {intro.proof_attachment && (
+            <>
+              {" — "}
+              <button
+                type="button"
+                onClick={openProofFile}
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: FONT, fontSize: 12.5, color: BRAND.coral, textDecoration: "underline" }}
+              >
+                view attachment
+              </button>
+            </>
+          )}
+          {proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 4 }}>{proofFileError}</div>}
         </div>
       )}
 
@@ -421,29 +428,13 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
         </div>
       )}
 
-      {/* Partner logs proof once the startup has confirmed */}
+      {/* Partner logs proof once the startup has confirmed — moved to the
+          page-level "Submit Proof of Startup-Retailer Introduction"
+          section (19 Sep 2026 feedback); this modal just points there. */}
       {isPartner && intro.approval_status === "Startup Confirmed" && (
-        <Card style={{ padding: 14, marginBottom: 14 }}>
-          {loggedAck ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT, fontSize: 12.5, color: "#1E7A34" }}>
-              <CheckCircle2 size={16} />
-              <span>Introduction logged. This pairing has moved forward — RIV can now see the proof on file.</span>
-            </div>
-          ) : (
-            <>
-              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, marginBottom: 10 }}>Log the introduction</div>
-              <Field label="Channel">
-                <select style={inputStyle} value={channel} onChange={(e) => setChannel(e.target.value)}>
-                  <option>Email</option><option>WhatsApp</option><option>In-person</option><option>Event</option>
-                </select>
-              </Field>
-              <Field label="Proof of introduction" required hint="Forwarded email, screenshot link, or a short note.">
-                <textarea style={{ ...inputStyle, minHeight: 70 }} value={proof} onChange={(e) => setProof(e.target.value)} />
-              </Field>
-              <PrimaryButton disabled={busy || !proof} onClick={submitLogIntroduction}>Log introduction</PrimaryButton>
-            </>
-          )}
-        </Card>
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#B8790A", padding: "10px 14px", background: "#FFF4E0", borderRadius: 10, marginBottom: 14 }}>
+          The startup has confirmed — log this introduction from "Submit Proof of Startup-Retailer Introduction" on the Introduce Startup to Retailers page.
+        </div>
       )}
 
       {/* Follow-up (either party, once Introduced/In Progress) */}
@@ -1122,10 +1113,16 @@ function IntroViewDetailsModal({ intro, onClose, isAdmin }) {
   ].filter(([, v]) => v);
   const supportingMaterialFiles = intro.supporting_material || [];
   const [fileError, setFileError] = useState("");
+  const [proofFileError, setProofFileError] = useState("");
   function openFile(index) {
     setFileError("");
     const opener = isAdmin ? api.openSupportingMaterialAdmin : api.openSupportingMaterial;
     opener(intro.id, index).catch((e) => setFileError(e.message));
+  }
+  function openProofFile() {
+    setProofFileError("");
+    const opener = isAdmin ? api.openProofAttachmentAdmin : api.openProofAttachment;
+    opener(intro.id).catch((e) => setProofFileError(e.message));
   }
 
   return (
@@ -1160,6 +1157,20 @@ function IntroViewDetailsModal({ intro, onClose, isAdmin }) {
               <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{value}</div>
             </div>
           ))}
+          {intro.proof_attachment && (
+            <button
+              type="button"
+              onClick={openProofFile}
+              style={{
+                display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+                background: "none", border: `1px solid ${BRAND.line}`, borderRadius: 9, padding: "8px 10px",
+                cursor: "pointer", fontFamily: FONT, fontSize: 12.5, color: BRAND.coral,
+              }}
+            >
+              <Paperclip size={13} /> {intro.proof_attachment.name}
+            </button>
+          )}
+          {proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 6 }}>{proofFileError}</div>}
         </div>
       )}
 
@@ -1204,75 +1215,91 @@ function IntroViewDetailsModal({ intro, onClose, isAdmin }) {
 //      context mirroring the RISE Introduction Submission Form by GTM
 //      Partners (Bigin), a declaration checkbox, and a submission
 //      acknowledgement once sent.
-function ConfirmIntroductionSection({ refreshKey, onOpen }) {
-  const [intros, setIntros] = useState(null);
+// "Check Introduction Interest with the Startup" (19 Sep 2026 feedback,
+// renamed + reworked from the old "Confirm Introduction" section) — a GTM
+// partner proposes ANY retailer from their network to ANY RIV portfolio
+// startup, to check whether RIV/the startup are interested. Unlike the old
+// pending-only dropdowns, both lists here are the FULL approved
+// directories (same source as the retailer/startup pickers used to live
+// in the old create form below) — there's nothing to restrict to, since
+// this is how a pairing gets INTO the pipeline in the first place, not a
+// queue of things already proposed. Submitting creates a new introduction
+// (same backend action the old bottom form's submit used) and starts the
+// same approval chain: Pending RIV Approval -> GTM Notified -> Startup
+// Confirmed. The declaration + "how introduced" fields stay with proof
+// submission below, since they only make sense once an introduction has
+// actually happened.
+function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
+  const [retailers, setRetailers] = useState(null);
+  const [startups, setStartups] = useState(null);
+  const [mine, setMine] = useState(null);
   const [error, setError] = useState("");
-  // Retailer/Startup dropdowns (19 Sep 2026 correction) — these are NOT a
-  // general "browse all approved retailers/startups" picker like the
-  // Introduce Startup to Retailers form below. A partner has nothing to do
-  // here for a retailer/startup that has no pending confirmation, so the
-  // options are built ONLY from what's actually in the Confirm Introduction
-  // queue right now — never the full approved directory. The two lists
-  // cascade off each other (picking a Retailer narrows Startup to only
-  // pairings pending for that retailer, and vice versa) so it's impossible
-  // to select a combination with nothing waiting. Selecting a pairing that
-  // uniquely identifies one pending confirmation IS the action — it opens
-  // straight into the existing "Log the Introduction" form (IntroDetailModal),
-  // whose own submit now shows an explicit acknowledgement (see loggedAck
-  // there) rather than silently closing.
-  const [retailerFilter, setRetailerFilter] = useState("");
-  const [startupFilter, setStartupFilter] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [form, setForm] = useState({ retailerId: "", startupId: "", opportunityContext: "" });
 
-  useEffect(() => { api.getConfirmQueue().then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)); }, [refreshKey]);
-
-  const retailerOptions = uniqueById(
-    (intros || []).filter((i) => !startupFilter || String(i.startup_id) === startupFilter),
-    (i) => i.retailer_id, (i) => i.retailer_name
-  );
-  const startupOptions = uniqueById(
-    (intros || []).filter((i) => !retailerFilter || String(i.retailer_id) === retailerFilter),
-    (i) => i.startup_id, (i) => i.startup_name
-  );
-
-  const matches = (intros || []).filter((i) => {
-    if (retailerFilter && String(i.retailer_id) !== retailerFilter) return false;
-    if (startupFilter && String(i.startup_id) !== startupFilter) return false;
-    return true;
-  });
-
-  // The moment both dropdowns resolve to exactly one pending confirmation,
-  // treat that selection as the action and open it.
   useEffect(() => {
-    if (retailerFilter && startupFilter && matches.length === 1) {
-      onOpen(matches[0]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retailerFilter, startupFilter, matches.length]);
+    api.getRetailers().then((r) => setRetailers(r.retailers.filter((x) => x.status === "Active in network"))).catch((e) => setError(e.message));
+    api.getStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message));
+  }, []);
+
+  useEffect(() => {
+    api.getIntroductions("GTM Partner").then((r) => setMine(r.introductions)).catch((e) => setError(e.message));
+  }, [refreshKey]);
+
+  async function submit() {
+    setError(""); setBusy(true);
+    try {
+      await api.createIntroduction({
+        retailerId: Number(form.retailerId), startupId: Number(form.startupId),
+        opportunityContext: form.opportunityContext,
+      });
+      setSent(true);
+      setForm({ retailerId: "", startupId: "", opportunityContext: "" });
+      await onCreated();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
 
   return (
     <div style={{ marginBottom: 30 }}>
-      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Confirm Introduction</div>
+      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Check Introduction Interest with the Startup</div>
       <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12 }}>
-        RIV has approved these and the startup has confirmed — select the retailer and startup below to log the introduction and move it forward.
+        Pick any retailer from your network and any RISE portfolio startup to check interest. RIV reviews every submission before anyone is notified.
       </div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-        <Field label="Retailer" hint="Only retailers with a pending confirmation can be selected." style={{ flex: "1 1 220px", marginBottom: 0 }}>
-          <select style={inputStyle} value={retailerFilter} onChange={(e) => setRetailerFilter(e.target.value)} disabled={!intros || !intros.length}>
+      <Card style={{ padding: 20, maxWidth: 520, marginBottom: 20 }}>
+        <ErrorBanner text={error} />
+        {sent && (
+          <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
+            Submitted — RIV will review and route this back to you.
+          </div>
+        )}
+        <Field label="Retailer" required hint="All retailers in your network can be selected.">
+          <select style={inputStyle} value={form.retailerId} onChange={(e) => setForm({ ...form, retailerId: e.target.value })}>
             <option value="">Select…</option>
-            {retailerOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            {(retailers || []).map((r) => <option key={r.id} value={r.id}>{r.brand || r.name}</option>)}
           </select>
         </Field>
-        <Field label="Startup" hint="Only startups with a pending confirmation can be selected." style={{ flex: "1 1 220px", marginBottom: 0 }}>
-          <select style={inputStyle} value={startupFilter} onChange={(e) => setStartupFilter(e.target.value)} disabled={!intros || !intros.length}>
+        <Field label="Startup" required hint="All RISE portfolio startups can be selected.">
+          <select style={inputStyle} value={form.startupId} onChange={(e) => setForm({ ...form, startupId: e.target.value })}>
             <option value="">Select…</option>
-            {startupOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            {(startups || []).map((s) => <option key={s.id} value={s.id}>{s.startup_name}</option>)}
           </select>
         </Field>
-      </div>
-      <ErrorBanner text={error} />
-      {!intros ? <Spinner /> : !intros.length ? (
-        <EmptyState icon={Handshake} title="Nothing waiting on you" text="Pairings RIV or a startup proposes to you will land here once the startup confirms." />
-      ) : matches.map((i) => (
+        <Field label="Opportunity context" required hint="Why do you believe this introduction is relevant? What business problem or opportunity exists?">
+          <textarea style={{ ...inputStyle, minHeight: 70 }} value={form.opportunityContext} onChange={(e) => setForm({ ...form, opportunityContext: e.target.value })} />
+        </Field>
+        <PrimaryButton
+          disabled={busy || !form.retailerId || !form.startupId || !form.opportunityContext}
+          onClick={submit} style={{ width: "100%" }}
+        >
+          Check introduction interest with the startup
+        </PrimaryButton>
+      </Card>
+
+      {!mine ? <Spinner /> : !mine.length ? (
+        <EmptyState icon={Handshake} title="No interest checks yet" text="Pairings you propose here will show up below with their status." />
+      ) : mine.map((i) => (
         <Card key={i.id} onClick={() => onOpen(i)} style={{ padding: 16, marginBottom: 10, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{i.startup_name} <ArrowRight size={12} style={{ margin: "0 4px", verticalAlign: "middle" }} /> {i.retailer_name}</div>
@@ -1297,31 +1324,50 @@ function uniqueById(list, getId, getName) {
   return Array.from(seen.values());
 }
 
-function IntroduceStartupToRetailersForm({ onCreated }) {
-  const [retailers, setRetailers] = useState(null);
-  const [startups, setStartups] = useState(null);
+// "Submit Proof of Startup-Retailer Introduction" (19 Sep 2026 feedback,
+// renamed + reworked from the old "Introduce Startup to Retailers" create
+// form). This is now the "Confirm Introduction" step's replacement: the
+// partner picks a pairing the startup has already confirmed interest in
+// (approval_status = 'Startup Confirmed', same Confirm Introduction queue
+// as before — cascading dropdowns, pending-only options, since there's
+// nothing to log for a pairing that isn't there yet), records how they
+// introduced the startup and attaches proof (a screenshot/PDF, not free
+// text), and declares the submission accurate.
+function SubmitProofOfIntroductionSection({ refreshKey, onCreated }) {
+  const [intros, setIntros] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
-  const [form, setForm] = useState({ retailerId: "", startupId: "", opportunityContext: "", howIntroduced: "" });
+  const [retailerFilter, setRetailerFilter] = useState("");
+  const [startupFilter, setStartupFilter] = useState("");
+  const [channel, setChannel] = useState("Email");
+  const [proofFile, setProofFile] = useState(null);
   const [declaration, setDeclaration] = useState(false);
 
-  useEffect(() => {
-    api.getRetailers().then((r) => setRetailers(r.retailers.filter((x) => x.status === "Active in network"))).catch((e) => setError(e.message));
-    api.getStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message));
-  }, []);
+  useEffect(() => { api.getConfirmQueue().then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)); }, [refreshKey]);
+
+  const retailerOptions = uniqueById(
+    (intros || []).filter((i) => !startupFilter || String(i.startup_id) === startupFilter),
+    (i) => i.retailer_id, (i) => i.retailer_name
+  );
+  const startupOptions = uniqueById(
+    (intros || []).filter((i) => !retailerFilter || String(i.retailer_id) === retailerFilter),
+    (i) => i.startup_id, (i) => i.startup_name
+  );
+  const matches = (intros || []).filter((i) => {
+    if (retailerFilter && String(i.retailer_id) !== retailerFilter) return false;
+    if (startupFilter && String(i.startup_id) !== startupFilter) return false;
+    return true;
+  });
+  const matchedIntro = matches.length === 1 ? matches[0] : null;
 
   async function submit() {
+    if (!matchedIntro) return;
     setError(""); setBusy(true);
     try {
-      await api.createIntroduction({
-        retailerId: Number(form.retailerId), startupId: Number(form.startupId),
-        opportunityContext: form.opportunityContext, howIntroduced: form.howIntroduced,
-        declarationAccepted: declaration,
-      });
+      await api.logIntroductionWithProof(matchedIntro.id, { channel, declarationAccepted: declaration }, proofFile);
       setSent(true);
-      setForm({ retailerId: "", startupId: "", opportunityContext: "", howIntroduced: "" });
-      setDeclaration(false);
+      setRetailerFilter(""); setStartupFilter(""); setChannel("Email"); setProofFile(null); setDeclaration(false);
       await onCreated();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
@@ -1329,44 +1375,59 @@ function IntroduceStartupToRetailersForm({ onCreated }) {
 
   return (
     <div>
-      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Introduce Startup to Retailers</div>
+      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Submit Proof of Startup-Retailer Introduction</div>
       <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12 }}>
-        Submit interest for introducing a retailer to this startup. RIV reviews every submission before anyone is notified.
+        RIV has approved these and the startup has confirmed — select the retailer and startup below and attach proof to move it forward.
       </div>
       <Card style={{ padding: 20, maxWidth: 520 }}>
         <ErrorBanner text={error} />
         {sent && (
           <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
-            Submitted — RIV will review and route this back to you.
+            Submitted — the introduction has been logged and moved forward.
           </div>
         )}
-        <Field label="Retailer" required hint="Only approved retailers can be selected.">
-          <select style={inputStyle} value={form.retailerId} onChange={(e) => setForm({ ...form, retailerId: e.target.value })}>
+        <Field label="Retailer" required hint="Only retailers with a pending confirmation can be selected.">
+          <select style={inputStyle} value={retailerFilter} onChange={(e) => setRetailerFilter(e.target.value)} disabled={!intros || !intros.length}>
             <option value="">Select…</option>
-            {(retailers || []).map((r) => <option key={r.id} value={r.id}>{r.brand || r.name}</option>)}
+            {retailerOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
         </Field>
-        <Field label="Startup" required hint="Only approved RISE startups can be selected.">
-          <select style={inputStyle} value={form.startupId} onChange={(e) => setForm({ ...form, startupId: e.target.value })}>
+        <Field label="Startup" required hint="Only startups with a pending confirmation can be selected.">
+          <select style={inputStyle} value={startupFilter} onChange={(e) => setStartupFilter(e.target.value)} disabled={!intros || !intros.length}>
             <option value="">Select…</option>
-            {(startups || []).map((s) => <option key={s.id} value={s.id}>{s.startup_name}</option>)}
+            {startupOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </Field>
-        <Field label="Opportunity context" required hint="Why do you believe this introduction is relevant? What business problem or opportunity exists?">
-          <textarea style={{ ...inputStyle, minHeight: 70 }} value={form.opportunityContext} onChange={(e) => setForm({ ...form, opportunityContext: e.target.value })} />
+        {intros && !intros.length && (
+          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 16 }}>
+            Nothing waiting on you yet — pairings land here once RIV approves and the startup confirms.
+          </div>
+        )}
+        <Field label="How have you introduced the startup to the enterprise" required>
+          <select style={inputStyle} value={channel} onChange={(e) => setChannel(e.target.value)}>
+            <option value="Email">Email</option>
+            <option value="WhatsApp">WhatsApp</option>
+            <option value="LinkedIn">LinkedIn</option>
+            <option value="In-person">In person</option>
+          </select>
         </Field>
-        <Field label="How have you introduced the startup to the enterprise">
-          <textarea style={{ ...inputStyle, minHeight: 60 }} value={form.howIntroduced} onChange={(e) => setForm({ ...form, howIntroduced: e.target.value })} />
+        <Field label="Provide proof of introduction" required hint="Attach a screenshot of the email/WhatsApp/LinkedIn exchange (or a PDF).">
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,application/pdf"
+            onChange={(e) => setProofFile(e.target.files?.[0] || null)}
+            style={{ fontFamily: FONT, fontSize: 12.5 }}
+          />
         </Field>
         <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 16, cursor: "pointer" }}>
           <input type="checkbox" checked={declaration} onChange={(e) => setDeclaration(e.target.checked)} style={{ marginTop: 3 }} />
           <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, lineHeight: 1.6 }}>Declaration — I confirm that I have personally facilitated this introduction. The information submitted is accurate to the best of my knowledge.</span>
         </label>
         <PrimaryButton
-          disabled={busy || !form.retailerId || !form.startupId || !form.opportunityContext || !declaration}
+          disabled={busy || !matchedIntro || !channel || !proofFile || !declaration}
           onClick={submit} style={{ width: "100%" }}
         >
-          Submit interest for introducing retailer to this startup
+          Submit proof of introduction
         </PrimaryButton>
       </Card>
     </div>
@@ -1376,8 +1437,8 @@ function IntroduceStartupToRetailersForm({ onCreated }) {
 function IntroduceStartupToRetailersView({ refreshKey, onOpen, onCreated }) {
   return (
     <div>
-      <ConfirmIntroductionSection refreshKey={refreshKey} onOpen={onOpen} />
-      <IntroduceStartupToRetailersForm onCreated={onCreated} />
+      <CheckIntroductionInterestSection refreshKey={refreshKey} onOpen={onOpen} onCreated={onCreated} />
+      <SubmitProofOfIntroductionSection refreshKey={refreshKey} onCreated={onCreated} />
     </div>
   );
 }

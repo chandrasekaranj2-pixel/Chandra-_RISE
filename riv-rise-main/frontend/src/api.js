@@ -132,7 +132,43 @@ export const api = {
   updateCommitStatus: (id, commitStatus) => request(`/introductions/${id}/commit-status`, { method: "PUT", body: { commitStatus } }),
   confirmRequest: (id) => request(`/introductions/${id}/confirm-request`, { method: "PUT" }),
   agreeIntroduction: (id) => request(`/introductions/${id}/agree`, { method: "PUT" }),
-  logIntroduction: (id, payload) => request(`/introductions/${id}/log-introduction`, { method: "PUT", body: payload }),
+  // "Submit Proof of Startup-Retailer Introduction" (19 Sep 2026 feedback)
+  // — proof is now an attached screenshot/PDF, not free text, so this
+  // sends multipart/form-data (like createIntroductionWithFiles above)
+  // instead of JSON. `proofFile` is a single File object.
+  logIntroductionWithProof: (id, { channel, introductionDate, declarationAccepted }, proofFile) => {
+    const formData = new FormData();
+    if (channel) formData.append("channel", channel);
+    if (introductionDate) formData.append("introductionDate", introductionDate);
+    if (declarationAccepted) formData.append("declarationAccepted", "true");
+    if (proofFile) formData.append("proofAttachment", proofFile);
+    return requestMultipart(`/introductions/${id}/log-introduction`, { method: "PUT", formData });
+  },
+  async openProofAttachment(introId) {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/introductions/${introId}/proof-attachment`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let message = `Could not open file (${res.status})`;
+      try { message = (await res.json()).error || message; } catch {}
+      throw new Error(message);
+    }
+    window.open(res.url, "_blank", "noopener");
+  },
+  // Admin-scoped equivalent, same reasoning as openSupportingMaterialAdmin.
+  async openProofAttachmentAdmin(introId) {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/admin/introductions/${introId}/proof-attachment`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let message = `Could not open file (${res.status})`;
+      try { message = (await res.json()).error || message; } catch {}
+      throw new Error(message);
+    }
+    window.open(res.url, "_blank", "noopener");
+  },
   followUpIntroduction: (id, payload) => request(`/introductions/${id}/follow-up`, { method: "PUT", body: payload }),
   confirmSale: (id, payload) => request(`/introductions/${id}/confirm-sale`, { method: "PUT", body: payload }),
   closeIntroduction: (id, payload) => request(`/introductions/${id}/close`, { method: "PUT", body: payload }),

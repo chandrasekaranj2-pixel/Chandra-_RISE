@@ -106,7 +106,11 @@ const COMMIT_STATUSES = ["OK to introduce", "Already in touch", "Not a right cus
 // when the demo seed's 'Call' value (not in ANY version of this list)
 // violated introductions_channel_check against a live table whose
 // constraint had never been migrated forward.
-const CHANNELS = ["Email", "WhatsApp", "In-person", "Event"];
+// LinkedIn added 19 Sep 2026 feedback (Submit Proof of Startup-Retailer
+// Introduction's channel dropdown: Email/WhatsApp/LinkedIn/In-person).
+// Event is kept for any pre-existing rows that used it — not offered in
+// the new dropdown, but still a valid stored value.
+const CHANNELS = ["Email", "WhatsApp", "LinkedIn", "In-person", "Event"];
 
 async function initSchema() {
   await pool.query(`
@@ -399,6 +403,17 @@ async function initSchema() {
     -- because the retailer sits in their network).
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS partner_fee_pct NUMERIC;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS partner_fee_amount NUMERIC;
+
+    -- Proof-of-introduction attachment (19 Sep 2026 feedback) — "Submit
+    -- Proof of Startup-Retailer Introduction" now takes an actual
+    -- screenshot/file instead of a free-text description. Same
+    -- {name, path, size, mime_type} shape as supporting_material, but a
+    -- single object (not an array) since there's only ever one proof file
+    -- per introduction — stored via uploadProofAttachment in
+    -- supportingMaterialStorage.js. proof_of_introduction (TEXT, existing)
+    -- is still set alongside it (to the file's name) so every place that
+    -- already reads that column keeps showing something meaningful.
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS proof_attachment JSONB;
   `);
 
   // approval_status / engagement_stage (repurposed as Deal Status) both
