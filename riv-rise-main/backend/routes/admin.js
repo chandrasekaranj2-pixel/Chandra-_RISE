@@ -3,7 +3,7 @@
 // visibility). Mounted at /api/admin, requireAdmin throughout.
 const { Router } = require("express");
 const bcrypt = require("bcryptjs");
-const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES } = require("../db.js");
+const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
 const { requireAuth, requireAdmin } = require("../middleware/auth.js");
 const portalRoutes = require("./portal.js");
 const { computePartnerFee } = portalRoutes;
@@ -510,6 +510,13 @@ router.put("/introductions/:id", async (req, res, next) => {
     if (f.dealStatus && !DEAL_STATUSES.includes(f.dealStatus)) {
       return res.status(400).json({ error: `dealStatus must be one of: ${DEAL_STATUSES.join(", ")}` });
     }
+    // 21 Sep 2026 addendum — Startup Commit Status (Tab 2) moved from a
+    // startup-editable field to an admin-recorded one (RIV's call: the
+    // startup no longer has a control for this on their own screen; admin
+    // records it here based on what the startup told them off-system).
+    if (f.startupCommitStatus && !COMMIT_STATUSES.includes(f.startupCommitStatus)) {
+      return res.status(400).json({ error: `startupCommitStatus must be one of: ${COMMIT_STATUSES.join(", ")}` });
+    }
 
     // Rate lock at Closed-Won (18 Sep 2026 admin requirement): when this
     // override is the one moving a GTM-Partner-initiated introduction to
@@ -536,11 +543,13 @@ router.put("/introductions/:id", async (req, res, next) => {
          fee_amount_due = COALESCE($7, fee_amount_due), approval_status = COALESCE($10, approval_status),
          opportunity_value = COALESCE($11, opportunity_value), proof_of_introduction = COALESCE($12, proof_of_introduction),
          partner_fee_pct = COALESCE($13, partner_fee_pct), partner_fee_amount = COALESCE($14, partner_fee_amount),
+         startup_commit_status = COALESCE($15, startup_commit_status),
+         startup_commit_status_at = CASE WHEN $15::text IS NOT NULL THEN now() ELSE startup_commit_status_at END,
          updated_at = now(), updated_by = $8
        WHERE id = $1 RETURNING *`,
       [req.params.id, f.status, f.introRate, f.closureRate, f.engagementStage, f.dealValue, f.feeAmountDue, req.user.name,
        f.dealStatus, f.approvalStatus, f.opportunityValue ?? null, f.proofOfIntroduction || null,
-       partnerFeePct, partnerFeeAmount]
+       partnerFeePct, partnerFeeAmount, f.startupCommitStatus || null]
     );
     if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
     res.json({ introduction: rows[0] });

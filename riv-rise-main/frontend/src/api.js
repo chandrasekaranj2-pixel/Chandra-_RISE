@@ -129,7 +129,9 @@ export const api = {
   // needed for this list, same route-ordering reasoning as the backend.
   getConfirmQueue: () => request("/introductions/confirm-queue"),
   updateOpportunity: (id, payload) => request(`/introductions/${id}/opportunity`, { method: "PUT", body: payload }),
-  updateCommitStatus: (id, commitStatus) => request(`/introductions/${id}/commit-status`, { method: "PUT", body: { commitStatus } }),
+  // Startup Commit Status is admin-recorded now (21 Sep 2026 addendum) —
+  // see updateIntroductionAdmin's startupCommitStatus field below; the
+  // startup no longer has its own route/control for this.
   confirmRequest: (id) => request(`/introductions/${id}/confirm-request`, { method: "PUT" }),
   agreeIntroduction: (id) => request(`/introductions/${id}/agree`, { method: "PUT" }),
   // "Submit Proof of Startup-Retailer Introduction" (19 Sep 2026 feedback)

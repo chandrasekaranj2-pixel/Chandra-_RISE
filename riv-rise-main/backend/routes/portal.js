@@ -9,7 +9,7 @@
 // through the exact same approval_status chain as everything else (see
 // db.js): RIV approves first no matter who initiated.
 const { Router } = require("express");
-const { pool, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
+const { pool, APPROVAL_STATUSES, DEAL_STATUSES } = require("../db.js");
 const { requireAuth, requireRole } = require("../middleware/auth.js");
 const { handleSupportingMaterialUpload } = require("../lib/supportingMaterialUpload.js");
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
@@ -420,39 +420,10 @@ router.put("/introductions/:id/opportunity", requireRole("startup"), async (req,
   }
 });
 
-// PUT /api/introductions/:id/commit-status — Tab 2 ("Retailer
-// Introductions Initiated by RIV") only. The startup's first response to
-// an opportunity RIV surfaced (copy-ready PRD, Tab 2 items 5–8):
-//   - "OK to introduce"        -> notifies RIV to proceed with the intro.
-//   - "Already in touch"       -> notifies RIV, flags a likely duplicate.
-//   - "Not a right customer"   -> notifies RIV, who decides final disposition.
-// RIV keeps full control of Introduction Status either way (item 9) — this
-// endpoint only ever writes startup_commit_status, never status/approval_status.
-router.put("/introductions/:id/commit-status", requireRole("startup"), async (req, res, next) => {
-  try {
-    const { commitStatus } = req.body || {};
-    if (!COMMIT_STATUSES.includes(commitStatus)) {
-      return res.status(400).json({ error: `commitStatus must be one of: ${COMMIT_STATUSES.join(", ")}` });
-    }
-    const { rows: s } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
-    const { rows: introRows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
-    const intro = introRows[0];
-    if (!intro || intro.startup_id !== s[0]?.id) return res.status(404).json({ error: "Introduction not found." });
-    if (intro.initiated_by !== "RIV Admin") {
-      return res.status(400).json({ error: "Commit Status only applies to opportunities RIV initiated." });
-    }
-
-    const { rows } = await pool.query(
-      `UPDATE introductions SET startup_commit_status = $2, startup_commit_status_at = now(), updated_at = now(), updated_by = $3
-       WHERE id = $1 RETURNING *`,
-      [req.params.id, commitStatus, req.user.name]
-    );
-    await notifyAdmins(`Startup commit status: ${commitStatus}`, req.params.id);
-    res.json({ introduction: rows[0] });
-  } catch (err) {
-    next(err);
-  }
-});
+// Startup Commit Status (Tab 2) used to be startup-editable here. As of
+// the 21 Sep 2026 addendum it's admin-recorded instead (RIV's call — see
+// PUT /api/admin/introductions/:id's startupCommitStatus field in
+// admin.js); the startup has no route to set it any more, by design.
 
 // PUT /api/introductions/:id/confirm-request — startup's confirmation step
 // after RIV has approved and the GTM partner has been notified (addendum
