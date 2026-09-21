@@ -1326,15 +1326,19 @@ function uniqueById(list, getId, getName) {
 
 // "Submit Proof of Startup-Retailer Introduction" (19 Sep 2026 feedback,
 // renamed + reworked from the old "Introduce Startup to Retailers" create
-// form). This is now the "Confirm Introduction" step's replacement: the
-// partner picks a pairing the startup has already confirmed interest in
-// (approval_status = 'Startup Confirmed', same Confirm Introduction queue
-// as before — cascading dropdowns, pending-only options, since there's
-// nothing to log for a pairing that isn't there yet), records how they
-// introduced the startup and attaches proof (a screenshot/PDF, not free
-// text), and declares the submission accurate.
+// form; dropdowns broadened 19 Sep 2026 follow-up to match "Check
+// Introduction Interest" above). The Retailer/Startup dropdowns now list
+// the same full directories as the section above (not just pending
+// confirmations) for a consistent picker experience. What CAN actually be
+// submitted is still only a pairing the startup has confirmed interest in
+// (approval_status = 'Startup Confirmed') — that's resolved quietly in the
+// background against the Confirm Introduction queue once both are picked,
+// and the form tells the partner plainly if that pairing isn't ready yet
+// instead of hiding it from the list.
 function SubmitProofOfIntroductionSection({ refreshKey, onCreated }) {
-  const [intros, setIntros] = useState(null);
+  const [retailers, setRetailers] = useState(null);
+  const [startups, setStartups] = useState(null);
+  const [pending, setPending] = useState(null); // Startup Confirmed queue, for matching only
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
@@ -1344,22 +1348,17 @@ function SubmitProofOfIntroductionSection({ refreshKey, onCreated }) {
   const [proofFile, setProofFile] = useState(null);
   const [declaration, setDeclaration] = useState(false);
 
-  useEffect(() => { api.getConfirmQueue().then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)); }, [refreshKey]);
+  useEffect(() => {
+    api.getRetailers().then((r) => setRetailers(r.retailers.filter((x) => x.status === "Active in network"))).catch((e) => setError(e.message));
+    api.getStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message));
+  }, []);
 
-  const retailerOptions = uniqueById(
-    (intros || []).filter((i) => !startupFilter || String(i.startup_id) === startupFilter),
-    (i) => i.retailer_id, (i) => i.retailer_name
-  );
-  const startupOptions = uniqueById(
-    (intros || []).filter((i) => !retailerFilter || String(i.retailer_id) === retailerFilter),
-    (i) => i.startup_id, (i) => i.startup_name
-  );
-  const matches = (intros || []).filter((i) => {
-    if (retailerFilter && String(i.retailer_id) !== retailerFilter) return false;
-    if (startupFilter && String(i.startup_id) !== startupFilter) return false;
-    return true;
-  });
-  const matchedIntro = matches.length === 1 ? matches[0] : null;
+  useEffect(() => { api.getConfirmQueue().then((r) => setPending(r.introductions)).catch((e) => setError(e.message)); }, [refreshKey]);
+
+  const matchedIntro = (retailerFilter && startupFilter)
+    ? (pending || []).find((i) => String(i.retailer_id) === retailerFilter && String(i.startup_id) === startupFilter) || null
+    : null;
+  const bothPicked = !!retailerFilter && !!startupFilter;
 
   async function submit() {
     if (!matchedIntro) return;
@@ -1377,7 +1376,7 @@ function SubmitProofOfIntroductionSection({ refreshKey, onCreated }) {
     <div>
       <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Submit Proof of Startup-Retailer Introduction</div>
       <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12 }}>
-        RIV has approved these and the startup has confirmed — select the retailer and startup below and attach proof to move it forward.
+        Select the retailer and startup, then attach proof to move a startup-confirmed pairing forward.
       </div>
       <Card style={{ padding: 20, maxWidth: 520 }}>
         <ErrorBanner text={error} />
@@ -1386,21 +1385,21 @@ function SubmitProofOfIntroductionSection({ refreshKey, onCreated }) {
             Submitted — the introduction has been logged and moved forward.
           </div>
         )}
-        <Field label="Retailer" required hint="Only retailers with a pending confirmation can be selected.">
-          <select style={inputStyle} value={retailerFilter} onChange={(e) => setRetailerFilter(e.target.value)} disabled={!intros || !intros.length}>
+        <Field label="Retailer" required hint="All retailers in your network can be selected.">
+          <select style={inputStyle} value={retailerFilter} onChange={(e) => setRetailerFilter(e.target.value)}>
             <option value="">Select…</option>
-            {retailerOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            {(retailers || []).map((r) => <option key={r.id} value={r.id}>{r.brand || r.name}</option>)}
           </select>
         </Field>
-        <Field label="Startup" required hint="Only startups with a pending confirmation can be selected.">
-          <select style={inputStyle} value={startupFilter} onChange={(e) => setStartupFilter(e.target.value)} disabled={!intros || !intros.length}>
+        <Field label="Startup" required hint="All RISE portfolio startups can be selected.">
+          <select style={inputStyle} value={startupFilter} onChange={(e) => setStartupFilter(e.target.value)}>
             <option value="">Select…</option>
-            {startupOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            {(startups || []).map((s) => <option key={s.id} value={s.id}>{s.startup_name}</option>)}
           </select>
         </Field>
-        {intros && !intros.length && (
-          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 16 }}>
-            Nothing waiting on you yet — pairings land here once RIV approves and the startup confirms.
+        {bothPicked && !matchedIntro && (
+          <div style={{ fontFamily: FONT, fontSize: 12, color: "#B8790A", background: "#FFF4E0", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
+            This pairing isn't ready for proof yet — RIV still needs to approve it and the startup needs to confirm (see "Check Introduction Interest with the Startup" above).
           </div>
         )}
         <Field label="How have you introduced the startup to the enterprise" required>
