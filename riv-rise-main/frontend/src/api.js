@@ -68,7 +68,7 @@ export const api = {
   getMe: () => request("/me"),
   getStartups: () => request("/startups"),
   getStartup: (id) => request(`/startups/${id}`),
-  getRetailers: () => request("/retailers"),
+  getRetailers: ({ mine } = {}) => request(`/retailers${mine ? "?mine=true" : ""}`),
   addRetailer: (payload) => request("/retailers", { method: "POST", body: payload }),
   // initiatedBy: "Startup" (Tab 1 — Retailer Introductions Requested) or
   // "RIV Admin" (Tab 2 — Retailer Introductions Initiated by RIV). Omit to
@@ -91,26 +91,14 @@ export const api = {
     files.forEach((file) => formData.append("supportingMaterial", file));
     return requestMultipart("/introductions", { formData });
   },
-  // The backend route redirects (302) to a short-lived signed Supabase
-  // Storage URL. A plain <a href> can't carry the Authorization header
-  // this route needs, so this fetches it manually (following the
-  // redirect) and hands back the final URL for the caller to window.open.
-  async openSupportingMaterial(introId, index) {
-    const token = getToken();
-    const res = await fetch(`${API_BASE}/api/introductions/${introId}/supporting-material/${index}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) {
-      let message = `Could not open file (${res.status})`;
-      try { message = (await res.json()).error || message; } catch {}
-      throw new Error(message);
-    }
-    window.open(res.url, "_blank", "noopener");
-  },
-  // Admin-only equivalent of openSupportingMaterial above, hitting the
-  // /api/admin/... route instead (19 Sep 2026 addendum — admin can view
-  // any introduction's supporting material; GTM partner intentionally
-  // still cannot, per RIV's explicit call).
+  // 24 Sep 2026 addendum: Supporting Material is admin-viewing-only now —
+  // the partner/startup-scoped GET /introductions/:id/supporting-material/:index
+  // route this used to call has been removed from the backend entirely
+  // (see portal.js). openSupportingMaterialAdmin below, hitting the
+  // /api/admin/... route (19 Sep 2026 addendum — admin can view any
+  // introduction's supporting material; GTM partner intentionally still
+  // cannot, per RIV's explicit call), is the only way to open these files
+  // now, for any role.
   async openSupportingMaterialAdmin(introId, index) {
     const token = getToken();
     const res = await fetch(`${API_BASE}/api/admin/introductions/${introId}/supporting-material/${index}`, {
@@ -129,9 +117,10 @@ export const api = {
   // needed for this list, same route-ordering reasoning as the backend.
   getConfirmQueue: () => request("/introductions/confirm-queue"),
   updateOpportunity: (id, payload) => request(`/introductions/${id}/opportunity`, { method: "PUT", body: payload }),
-  // Startup Commit Status is admin-recorded now (21 Sep 2026 addendum) —
-  // see updateIntroductionAdmin's startupCommitStatus field below; the
-  // startup no longer has its own route/control for this.
+  // Startup Commit Status — startup-editable again (24 Sep 2026 addendum);
+  // updateIntroductionAdmin's startupCommitStatus field below still works
+  // too, as Admin's phone/email fallback — both write the same column.
+  updateCommitStatus: (id, commitStatus) => request(`/introductions/${id}/commit-status`, { method: "PUT", body: { commitStatus } }),
   confirmRequest: (id) => request(`/introductions/${id}/confirm-request`, { method: "PUT" }),
   agreeIntroduction: (id) => request(`/introductions/${id}/agree`, { method: "PUT" }),
   // "Submit Proof of Startup-Retailer Introduction" (19 Sep 2026 feedback)
@@ -201,6 +190,27 @@ export const api = {
   updateIntroductionAdmin: (id, payload) => request(`/admin/introductions/${id}`, { method: "PUT", body: payload }),
   approveIntroduction: (id) => request(`/admin/introductions/${id}/approve`, { method: "PUT" }),
   rejectIntroduction: (id) => request(`/admin/introductions/${id}/reject`, { method: "PUT" }),
+  // RIV-direct proof logging (item 8) — same shape as logIntroductionWithProof
+  // above but no declaration checkbox (admin is already trusted).
+  logRivProof: (id, { channel, introductionDate }, proofFile) => {
+    const formData = new FormData();
+    if (channel) formData.append("channel", channel);
+    if (introductionDate) formData.append("introductionDate", introductionDate);
+    if (proofFile) formData.append("proofAttachment", proofFile);
+    return requestMultipart(`/admin/introductions/${id}/log-riv-proof`, { method: "PUT", formData });
+  },
+  async openRivProofAttachmentAdmin(introId) {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/admin/introductions/${introId}/riv-proof-attachment`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let message = `Could not open file (${res.status})`;
+      try { message = (await res.json()).error || message; } catch {}
+      throw new Error(message);
+    }
+    window.open(res.url, "_blank", "noopener");
+  },
   listInvoices: () => request("/admin/invoices"),
   createInvoice: (payload) => request("/admin/invoices", { method: "POST", body: payload }),
   updateInvoice: (id, payload) => request(`/admin/invoices/${id}`, { method: "PUT", body: payload }),

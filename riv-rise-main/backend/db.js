@@ -414,6 +414,26 @@ async function initSchema() {
     -- is still set alongside it (to the file's name) so every place that
     -- already reads that column keeps showing something meaningful.
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS proof_attachment JSONB;
+
+    -- Duplicate-introduction flagging (25 Sep 2026 batch, item 13) — same
+    -- pattern as retailers.duplicate_of_retailer_id above: informational
+    -- only, does not block the startup's own "Request Intro" submission
+    -- (the GTM partner's "Introduce Startup to Retailers" form is instead
+    -- BLOCKED server-side on a live duplicate pairing — see
+    -- routes/portal.js's createPartnerInitiatedIntroduction — so it never
+    -- needs this column set). Points at the earliest live pairing for the
+    -- same retailer+startup combo that existed at submission time.
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS duplicate_of_introduction_id INTEGER REFERENCES introductions(id) ON DELETE SET NULL;
+
+    -- RIV-direct proof-of-introduction attachment (25 Sep 2026 batch, item
+    -- 8) — brings RivDirectProofRow (admin's free-text-only proof logging)
+    -- in line with the partner's log-introduction flow, which already
+    -- requires an uploaded file. Reuses the same {name, path, size,
+    -- mime_type} shape as proof_attachment above; kept as a separate column
+    -- (rather than writing into proof_attachment) so it's visually obvious
+    -- in the data which side (GTM partner vs RIV admin) logged the proof,
+    -- even though both are surfaced the same way in the UI.
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS riv_proof_attachment JSONB;
   `);
 
   // approval_status / engagement_stage (repurposed as Deal Status) both

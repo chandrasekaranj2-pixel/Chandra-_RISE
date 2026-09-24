@@ -9,7 +9,7 @@
 // through the exact same approval_status chain as everything else (see
 // db.js): RIV approves first no matter who initiated.
 const { Router } = require("express");
-const { pool, APPROVAL_STATUSES, DEAL_STATUSES } = require("../db.js");
+const { pool, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
 const { requireAuth, requireRole } = require("../middleware/auth.js");
 const { handleSupportingMaterialUpload } = require("../lib/supportingMaterialUpload.js");
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
@@ -97,12 +97,27 @@ router.get("/retailers", requireRole("partner", "startup", "admin"), async (req,
     if (isPartner(req)) {
       const { rows: partnerRows } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
       const partnerId = partnerRows[0]?.id ?? null;
-      const { rows } = await pool.query(
-        `SELECT ${RETAILER_PUBLIC_COLUMNS} FROM retailers
-         WHERE submitted_by_partner_id = $1 OR owning_partner_id = $1 OR status = 'Active in network'
-         ORDER BY name`,
-        [partnerId]
-      );
+      // item 1 (25 Sep 2026 batch): "My Retail Network" (?mine=true) is now
+      // scoped to ONLY retailers this partner owns/submitted — the old
+      // "OR status = 'Active in network'" fallback showed any approved
+      // retailer regardless of owner, which is dropped here. The default
+      // (no ?mine=true) keeps the old, broader query, since
+      // CheckIntroductionInterestSection's retailer picker (item 2 — the
+      // partner needs to be able to pick ANY approved retailer to propose
+      // a pairing, not just their own) still calls this same endpoint.
+      const { rows } = req.query.mine === "true"
+        ? await pool.query(
+            `SELECT ${RETAILER_PUBLIC_COLUMNS} FROM retailers
+             WHERE submitted_by_partner_id = $1 OR owning_partner_id = $1
+             ORDER BY name`,
+            [partnerId]
+          )
+        : await pool.query(
+            `SELECT ${RETAILER_PUBLIC_COLUMNS} FROM retailers
+             WHERE submitted_by_partner_id = $1 OR owning_partner_id = $1 OR status = 'Active in network'
+             ORDER BY name`,
+            [partnerId]
+          );
       return res.json({ retailers: rows });
     }
     const { rows } = await pool.query(
@@ -163,14 +178,65 @@ router.post("/retailers", requireRole("partner"), async (req, res, next) => {
 
 // Shared SELECT used by both the list and detail introduction endpoints —
 // joins in display names so the frontend doesn't need N+1 lookups.
+// duplicate_of_* columns (item 13b) mirror admin.js's INTRO_SELECT_ADMIN
+// join — safe to expose to partner/startup since they're just the
+// duplicate pairing's own approval_status/initiated_by/request_date, not
+// anything from publicIntro()'s admin-only strip list.
 const INTRO_SELECT = `
   SELECT i.*, s.startup_name, r.name AS retailer_name, r.category AS retailer_category,
-         p.full_name AS partner_name
+         p.full_name AS partner_name,
+         dup.approval_status AS duplicate_of_approval_status, dup.initiated_by AS duplicate_of_initiated_by,
+         dup.request_date AS duplicate_of_request_date
   FROM introductions i
   JOIN startups s ON s.id = i.startup_id
   JOIN retailers r ON r.id = i.retailer_id
   LEFT JOIN partners p ON p.id = i.partner_id
+  LEFT JOIN introductions dup ON dup.id = i.duplicate_of_introduction_id
 `;
+
+// 24 Sep 2026 addendum: Supporting Material (the files a startup attaches
+// on "Request Intro") is admin-viewing-only — a GTM partner/startup should
+// see THAT files were attached, never the files themselves or their
+// storage paths/URLs. INTRO_SELECT above (and every other `SELECT i.*`
+// route in this file) pulls the raw supporting_material jsonb column
+// straight off the introductions row, so every partner/startup-facing
+// response must be passed through this stripper before res.json() —
+// otherwise the files are exposed in the API response even though no
+// current button in the UI happens to surface them. Only the *count*
+// survives, as supporting_material_count, so the frontend can still show
+// "3 files attached" without handing back paths. The admin equivalent
+// routes in admin.js are untouched — full access there is intentional.
+function publicIntro(intro) {
+  if (!intro) return intro;
+  const { supporting_material, supporting_material_url, riv_proof_attachment, ...rest } = intro;
+  return {
+    ...rest,
+    supporting_material_count: Array.isArray(supporting_material) ? supporting_material.length : 0,
+    has_riv_proof_attachment: !!riv_proof_attachment,
+  };
+}
+
+// A "live" pairing (25 Sep 2026 batch, items 2 & 13) — not Rejected, and
+// not sitting at a closed/dead deal stage. Shared SQL fragment so the
+// partner-form block (item 2) and the startup-side duplicate flag (item
+// 13) use the exact same definition of "still in the pipeline".
+const LIVE_PAIRING_SQL = `
+  approval_status != 'Rejected'
+  AND (status IS NULL OR status NOT IN ('Closed - Lost', 'Stalled'))
+  AND (engagement_stage IS NULL OR engagement_stage NOT IN ('Closed - Lost', 'Stalled'))
+`;
+
+// Mirrors App.jsx's interestStatusFor() — used only to compose the
+// duplicate-pairing warning message server-side (item 2), not for any
+// stored value.
+function interestStatusForServer(approvalStatus) {
+  if (approvalStatus === "Rejected") return "Startup Not interested";
+  if (["Startup Confirmed", "Introduced", "Proof Recorded"].includes(approvalStatus)) return "Startup interested";
+  return "Awaiting Startup interest";
+}
+function publicIntros(intros) {
+  return (intros || []).map(publicIntro);
+}
 
 // GET /api/introductions — "own" introductions only (PRD §9).
 //
@@ -190,14 +256,14 @@ router.get("/introductions", requireRole("partner", "startup"), async (req, res,
       const { rows } = initiatedByFilter
         ? await pool.query(`${INTRO_SELECT} WHERE i.partner_id = $1 AND i.initiated_by = $2 ORDER BY i.updated_at DESC`, [partnerId, initiatedByFilter])
         : await pool.query(`${INTRO_SELECT} WHERE i.partner_id = $1 ORDER BY i.updated_at DESC`, [partnerId]);
-      return res.json({ introductions: rows });
+      return res.json({ introductions: publicIntros(rows) });
     }
     const { rows: startupRows } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
     const startupId = startupRows[0]?.id ?? -1;
     const { rows } = initiatedByFilter
       ? await pool.query(`${INTRO_SELECT} WHERE i.startup_id = $1 AND i.initiated_by = $2 ORDER BY i.updated_at DESC`, [startupId, initiatedByFilter])
       : await pool.query(`${INTRO_SELECT} WHERE i.startup_id = $1 ORDER BY i.updated_at DESC`, [startupId]);
-    res.json({ introductions: rows });
+    res.json({ introductions: publicIntros(rows) });
   } catch (err) {
     next(err);
   }
@@ -221,7 +287,7 @@ router.get("/introductions/confirm-queue", requireRole("partner"), async (req, r
       `${INTRO_SELECT} WHERE i.partner_id = $1 AND i.approval_status = 'Startup Confirmed' ORDER BY i.updated_at DESC`,
       [partnerId]
     );
-    res.json({ introductions: rows });
+    res.json({ introductions: publicIntros(rows) });
   } catch (err) {
     next(err);
   }
@@ -235,7 +301,7 @@ router.get("/introductions/:id", requireRole("partner", "startup"), async (req, 
     if (!intro) return res.status(404).json({ error: "Introduction not found." });
 
     if (!(await ownsIntro(req, intro))) return res.status(403).json({ error: "Not your introduction." });
-    res.json({ introduction: intro });
+    res.json({ introduction: publicIntro(intro) });
   } catch (err) {
     next(err);
   }
@@ -288,47 +354,45 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
     // introduction row with files it claims to have but doesn't.
     const supportingMaterial = await uploadSupportingMaterial(req.files, { startupId });
 
+    // Duplicate-introduction flagging (item 13) — unlike the GTM partner's
+    // form (item 2), the startup's own Request Intro stays unblocked: a
+    // duplicate is still created, just flagged for admin's attention.
+    const { rows: dupRows } = await pool.query(
+      `SELECT id FROM introductions WHERE startup_id = $1 AND retailer_id = $2 AND ${LIVE_PAIRING_SQL} ORDER BY created_at ASC LIMIT 1`,
+      [startupId, retailerId]
+    );
+    const duplicateOfIntroductionId = dupRows[0]?.id || null;
+
     const { rows } = await pool.query(
       `INSERT INTO introductions
          (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
           why_interested, problem_solved, relevant_offering, buyer_persona, previously_engaged,
-          prior_engagement_details, supporting_material, consent_accepted, consent_accepted_at)
+          prior_engagement_details, supporting_material, consent_accepted, consent_accepted_at,
+          duplicate_of_introduction_id)
        VALUES ('Startup', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested',
-               $5, $6, $7, $8, $9, $10, $11::jsonb, true, now())
+               $5, $6, $7, $8, $9, $10, $11::jsonb, true, now(), $12)
        RETURNING *`,
       [partnerId, startupId, retailerId, retailer.network_source,
        whyInterested || null, problemSolved || null, relevantOffering || null, buyerPersona || null,
-       previouslyEngaged === "true", priorEngagementDetails || null, JSON.stringify(supportingMaterial)]
+       previouslyEngaged === "true", priorEngagementDetails || null, JSON.stringify(supportingMaterial),
+       duplicateOfIntroductionId]
     );
-    res.status(201).json({ introduction: rows[0] });
+    res.status(201).json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/introductions/:id/supporting-material/:index — redirects to a
-// freshly signed, short-lived download link for one attached file. Scoped
-// to the owning startup/partner like every other introduction read here;
-// the equivalent admin route (unscoped) lives in admin.js. Registered
-// before GET /introductions/:id (same route-ordering requirement as
-// confirm-queue above — a literal path segment must come before the :id
-// wildcard or it never matches).
-router.get("/introductions/:id/supporting-material/:index", requireRole("partner", "startup"), async (req, res, next) => {
-  try {
-    const { rows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
-    const intro = rows[0];
-    if (!intro) return res.status(404).json({ error: "Introduction not found." });
-    if (!(await ownsIntro(req, intro))) return res.status(403).json({ error: "Not your introduction." });
-
-    const file = (intro.supporting_material || [])[Number(req.params.index)];
-    if (!file) return res.status(404).json({ error: "File not found." });
-
-    const url = await getSignedUrl(file.path);
-    res.redirect(url);
-  } catch (err) {
-    next(err);
-  }
-});
+// 24 Sep 2026 addendum: there used to be a
+// GET /introductions/:id/supporting-material/:index route here, scoped to
+// the owning partner/startup, that redirected straight to a signed
+// download link for an attached file. Supporting Material is now
+// admin-viewing-only (see publicIntro() above), so that route is removed
+// entirely rather than left reachable — a partner/startup can no longer
+// fetch the files at all, not even their own. The unscoped admin
+// equivalent (GET /admin/introductions/:id/supporting-material/:index)
+// remains in admin.js; that is the only place these files can be opened
+// from now.
 
 // "Check Introduction Interest with the Startup" (18 Sep 2026 feedback,
 // renamed + reworked 19 Sep 2026) — a GTM partner proposes a retailer x
@@ -364,6 +428,21 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
     const { rows: startupRows } = await pool.query("SELECT id FROM startups WHERE id = $1 AND status = 'Active'", [startupId]);
     if (!startupRows[0]) return res.status(404).json({ error: "Startup not found or not yet approved." });
 
+    // Duplicate-pairing validation (item 2) — server-side is the source of
+    // truth; blocks the GTM partner's form outright (unlike the startup's
+    // own Request Intro, which stays open and merely flags — see item 13).
+    const { rows: dupRows } = await pool.query(
+      `${INTRO_SELECT} WHERE i.startup_id = $1 AND i.retailer_id = $2 AND ${LIVE_PAIRING_SQL} ORDER BY i.created_at ASC LIMIT 1`,
+      [startupId, retailerId]
+    );
+    if (dupRows[0]) {
+      const dup = dupRows[0];
+      const initiatorLabel = dup.initiated_by === "RIV Admin" ? "RIV" : dup.initiated_by;
+      return res.status(409).json({
+        error: `${dup.startup_name} has already been introduced to ${dup.retailer_name} — this pairing is already in the pipeline (Initiated by ${initiatorLabel}, currently ${interestStatusForServer(dup.approval_status)}). Check the list below instead of submitting a duplicate.`,
+      });
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO introductions
          (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
@@ -373,7 +452,7 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
       [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null]
     );
     await notifyAdmins("New partner-initiated introduction", rows[0].id);
-    res.status(201).json({ introduction: rows[0] });
+    res.status(201).json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
@@ -414,16 +493,72 @@ router.put("/introductions/:id/opportunity", requireRole("startup"), async (req,
        WHERE id = $1 RETURNING *`,
       [req.params.id, opportunityValue ?? null, dealStatus || null, req.user.name]
     );
-    res.json({ introduction: rows[0] });
+    res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
 });
 
-// Startup Commit Status (Tab 2) used to be startup-editable here. As of
-// the 21 Sep 2026 addendum it's admin-recorded instead (RIV's call — see
-// PUT /api/admin/introductions/:id's startupCommitStatus field in
-// admin.js); the startup has no route to set it any more, by design.
+// PUT /api/introductions/:id/commit-status — Tab 2 ("Retailer
+// Introductions Initiated by RIV") only. Startup-editable again as of the
+// 24 Sep 2026 addendum (Scenario C: "either can set Commit Status —
+// startup directly if they're in the app, Admin as a fallback if the
+// startup responded by phone/email instead"). This restores what the 21
+// Sep 2026 addendum had made admin-only (PUT /api/admin/introductions/:id's
+// startupCommitStatus field in admin.js, still there and still usable as
+// the phone/email fallback) — both routes write the same column, so
+// whichever side acts first is simply what sticks; neither one locks the
+// other out.
+//   - "OK to introduce"        -> notifies RIV to proceed with the intro.
+//   - "Already in touch"       -> notifies RIV, flags a likely duplicate.
+//   - "Not a right customer"   -> notifies RIV, who decides final disposition.
+// Applies to anything the startup didn't initiate itself — RIV-direct
+// opportunities (initiated_by = 'RIV Admin') and GTM-partner-proposed
+// pairings (initiated_by = 'GTM Partner') alike, matching what Admin's own
+// startupCommitStatus control already allows (`initiated_by !== 'Startup'`).
+router.put("/introductions/:id/commit-status", requireRole("startup"), async (req, res, next) => {
+  try {
+    const { commitStatus } = req.body || {};
+    if (!COMMIT_STATUSES.includes(commitStatus)) {
+      return res.status(400).json({ error: `commitStatus must be one of: ${COMMIT_STATUSES.join(", ")}` });
+    }
+    const { rows: s } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
+    const { rows: introRows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
+    const intro = introRows[0];
+    if (!intro || intro.startup_id !== s[0]?.id) return res.status(404).json({ error: "Introduction not found." });
+    if (intro.initiated_by === "Startup") {
+      return res.status(400).json({ error: "Commit Status only applies to opportunities RIV or a GTM partner initiated." });
+    }
+    // Item 14 (server-side guard): once the deal has reached a closed
+    // state, Commit Status is read-only ("N/A" in the UI) — reject any
+    // attempt to change it via direct API call too, not just disable the
+    // control client-side.
+    if (["Closed - Won", "Closed - Lost", "Stalled"].includes(intro.engagement_stage)) {
+      return res.status(400).json({ error: "Commit Status is read-only once the deal has reached a closed stage." });
+    }
+
+    // Item 9: auto-advance GTM-Notified -> Startup Confirmed. Only when the
+    // startup picks "OK to introduce" AND the introduction is currently
+    // sitting at exactly 'GTM Notified' — every other Commit Status value,
+    // and every other starting approval_status (e.g. Scenario A/C, where
+    // there's no partner in the loop and this never sits at GTM Notified in
+    // the first place), leaves approval_status untouched and still requires
+    // Admin's manual review via the existing approve route.
+    const shouldAutoAdvance = commitStatus === "OK to introduce" && intro.approval_status === "GTM Notified";
+    const { rows } = await pool.query(
+      `UPDATE introductions
+       SET startup_commit_status = $2, startup_commit_status_at = now(),
+           approval_status = CASE WHEN $4 THEN 'Startup Confirmed' ELSE approval_status END,
+           updated_at = now(), updated_by = $3
+       WHERE id = $1 RETURNING *`,
+      [req.params.id, commitStatus, req.user.name, shouldAutoAdvance]
+    );
+    await notifyAdmins(`Startup commit status: ${commitStatus}`, req.params.id);
+    res.json({ introduction: publicIntro(rows[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // PUT /api/introductions/:id/confirm-request — startup's confirmation step
 // after RIV has approved and the GTM partner has been notified (addendum
@@ -448,7 +583,7 @@ router.put("/introductions/:id/confirm-request", requireRole("startup"), async (
       const { rows: partnerUserRows } = await pool.query("SELECT user_id FROM partners WHERE id = $1", [intro.partner_id]);
       if (partnerUserRows[0]?.user_id) await notifyUserId(pool, "Status updated", req.params.id, partnerUserRows[0].user_id);
     }
-    res.json({ introduction: rows[0] });
+    res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
@@ -476,7 +611,7 @@ router.put("/introductions/:id/agree", requireRole("startup"), async (req, res, 
       const { rows: partnerUserRows } = await pool.query("SELECT user_id FROM partners WHERE id = $1", [intro.partner_id]);
       if (partnerUserRows[0]?.user_id) await notifyUserId(pool, "Status updated", req.params.id, partnerUserRows[0].user_id);
     }
-    res.json({ introduction: rows[0] });
+    res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
@@ -524,7 +659,7 @@ router.put("/introductions/:id/log-introduction", requireRole("partner"), handle
       [req.params.id, channel || "Email", introductionDate || null, proofAttachment.name, JSON.stringify(proofAttachment), req.user.name]
     );
     await notify(pool, "Introduction made", req.params.id, "startup", intro.startup_id);
-    res.json({ introduction: rows[0] });
+    res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
@@ -571,7 +706,7 @@ router.put("/introductions/:id/follow-up", requireRole("partner", "startup"), as
       [req.params.id, JSON.stringify([entry]), engagementStage || null, nextStatus, req.user.name]
     );
     await notifyOtherParty(req, intro, "Status updated");
-    res.json({ introduction: rows[0] });
+    res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
@@ -613,7 +748,7 @@ router.put("/introductions/:id/confirm-sale", requireRole("startup"), async (req
       const { rows: partnerUserRows } = await pool.query("SELECT user_id FROM partners WHERE id = $1", [intro.partner_id]);
       if (partnerUserRows[0]?.user_id) await notifyUserId(pool, "Status updated", req.params.id, partnerUserRows[0].user_id);
     }
-    res.json({ introduction: rows[0] });
+    res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
@@ -640,7 +775,7 @@ router.put("/introductions/:id/close", requireRole("partner", "startup"), async 
       [req.params.id, status, engagementStage, req.user.name]
     );
     await notifyOtherParty(req, intro, "Status updated");
-    res.json({ introduction: rows[0] });
+    res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }

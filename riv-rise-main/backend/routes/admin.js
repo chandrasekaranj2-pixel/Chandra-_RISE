@@ -7,7 +7,8 @@ const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_ST
 const { requireAuth, requireAdmin } = require("../middleware/auth.js");
 const portalRoutes = require("./portal.js");
 const { computePartnerFee } = portalRoutes;
-const { getSignedUrl } = require("../lib/supportingMaterialStorage.js");
+const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMaterialStorage.js");
+const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -31,7 +32,23 @@ router.get("/summary", async (req, res, next) => {
         (SELECT COUNT(*)::int FROM retailers) AS retailers,
         (SELECT COUNT(*)::int FROM introductions) AS introductions
     `);
-    res.json({ statusCounts, pipeline: pipeline[0], counts: counts[0], allStatuses: INTRODUCTION_STATUSES });
+    // item 10 (25 Sep 2026 batch) — "Needs your attention" + "Introductions
+    // by initiator" for AdminOverview. Kept as their own queries rather
+    // than folded into statusCounts/pipeline above since they group by
+    // different columns (approval_status / initiated_by / retailer status).
+    const { rows: needsAttention } = await pool.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM retailers WHERE status IN ('Prospect','In Process','Duplicate')) AS pending_retailer_approvals,
+        (SELECT COUNT(*)::int FROM introductions WHERE approval_status = 'Pending RIV Approval') AS introductions_pending_riv_approval,
+        (SELECT COUNT(*)::int FROM introductions WHERE approval_status = 'GTM Notified') AS introductions_awaiting_startup_response
+    `);
+    const { rows: initiatorCounts } = await pool.query(
+      "SELECT initiated_by, COUNT(*)::int AS count FROM introductions GROUP BY initiated_by"
+    );
+    res.json({
+      statusCounts, pipeline: pipeline[0], counts: counts[0], allStatuses: INTRODUCTION_STATUSES,
+      needsAttention: needsAttention[0], initiatorCounts,
+    });
   } catch (err) {
     next(err);
   }
@@ -39,11 +56,27 @@ router.get("/summary", async (req, res, next) => {
 
 // ---------- Partners ----------
 
+// item 11 (25 Sep 2026 batch) — inline per-partner metrics for
+// AdminPartnersView: retailer network size, active (non-Rejected,
+// non-closed) introductions, and total fees earned through them. Fees
+// earned reuses fee_amount_due (the same figure /admin/summary's
+// fees_earned aggregates from) rather than partner_fee_amount — that
+// column is the partner's OWN cut, not what RIV earned through them.
+// Three correlated subqueries rather than one grouped join, since each
+// aggregates a different table/relationship off partners.id and a single
+// join would multiply rows across retailers/introductions.
 router.get("/partners", async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT p.*, u.email AS login_email FROM partners p LEFT JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC`
-    );
+    const { rows } = await pool.query(`
+      SELECT p.*, u.email AS login_email,
+        (SELECT COUNT(*)::int FROM retailers r WHERE r.owning_partner_id = p.id) AS retailer_count,
+        (SELECT COUNT(*)::int FROM introductions i
+           WHERE i.partner_id = p.id AND i.approval_status != 'Rejected'
+             AND i.status NOT IN ('Closed - Won','Closed - Lost','Stalled','Invoiced','Paid','Payout Complete')) AS active_introduction_count,
+        (SELECT COALESCE(SUM(i.fee_amount_due), 0) FROM introductions i
+           WHERE i.partner_id = p.id AND i.status IN ('Closed - Won','Invoiced','Paid','Payout Complete')) AS fees_earned
+      FROM partners p LEFT JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC
+    `);
     res.json({ partners: rows });
   } catch (err) {
     next(err);
@@ -129,11 +162,24 @@ router.delete("/partners/:id", async (req, res, next) => {
 
 // ---------- Startups ----------
 
+// item 12 (25 Sep 2026 batch) — inline per-startup metrics for
+// AdminStartupsView, same shape/reasoning as item 11's partner metrics
+// above. "Total opportunity value" sums opportunity_value (the real
+// column name — see db.js's `ALTER TABLE introductions ADD COLUMN IF NOT
+// EXISTS opportunity_value NUMERIC`), not deal_value/fee_amount_due,
+// across every introduction tied to the startup regardless of status.
 router.get("/startups", async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT s.*, u.email AS login_email FROM startups s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.created_at DESC`
-    );
+    const { rows } = await pool.query(`
+      SELECT s.*, u.email AS login_email,
+        (SELECT COUNT(*)::int FROM introductions i
+           WHERE i.startup_id = s.id AND i.approval_status != 'Rejected'
+             AND i.status NOT IN ('Closed - Won','Closed - Lost','Stalled','Invoiced','Paid','Payout Complete')) AS active_introduction_count,
+        (SELECT COUNT(*)::int FROM introductions i
+           WHERE i.startup_id = s.id AND i.engagement_stage = 'Closed - Won') AS closed_won_count,
+        (SELECT COALESCE(SUM(i.opportunity_value), 0) FROM introductions i WHERE i.startup_id = s.id) AS total_opportunity_value
+      FROM startups s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.created_at DESC
+    `);
     res.json({ startups: rows });
   } catch (err) {
     next(err);
@@ -372,11 +418,14 @@ router.delete("/retailers/:id", async (req, res, next) => {
 // ---------- Introductions (full visibility + override) ----------
 
 const INTRO_SELECT_ADMIN = `
-  SELECT i.*, s.startup_name, r.name AS retailer_name, p.full_name AS partner_name
+  SELECT i.*, s.startup_name, r.name AS retailer_name, p.full_name AS partner_name,
+         dup.approval_status AS duplicate_of_approval_status, dup.initiated_by AS duplicate_of_initiated_by,
+         dup.request_date AS duplicate_of_request_date
   FROM introductions i
   JOIN startups s ON s.id = i.startup_id
   JOIN retailers r ON r.id = i.retailer_id
   LEFT JOIN partners p ON p.id = i.partner_id
+  LEFT JOIN introductions dup ON dup.id = i.duplicate_of_introduction_id
 `;
 
 router.get("/introductions", async (req, res, next) => {
@@ -426,19 +475,32 @@ router.get("/introductions/:id/proof-attachment", async (req, res, next) => {
   }
 });
 
-// POST /api/admin/introductions — RIV admin makes a direct introduction.
+// POST /api/admin/introductions — "New Opportunity" (24 Sep 2026 addendum,
+// Scenario C: RIV proposes an opportunity directly to a startup). Only
+// meant for RIV-Direct retailers — there's no GTM partner to loop in here,
+// which is exactly why this lands straight on "Startup Confirmed" instead
+// of going through the Pending-RIV-Approval / GTM-Notified chain: RIV
+// itself is both the initiator and the approver, so there's nothing left
+// to approve. A GTM-network retailer pairing still goes through the
+// partner's "Check Introduction Interest" flow (Scenario D) instead, so
+// this route rejects one to avoid silently orphaning the partner.
 router.post("/introductions", async (req, res, next) => {
   try {
-    const { startupId, retailerId, status } = req.body || {};
+    const { startupId, retailerId, context } = req.body || {};
     if (!startupId || !retailerId) return res.status(400).json({ error: "startupId and retailerId are required." });
     const { rows: retailerRows } = await pool.query("SELECT network_source FROM retailers WHERE id = $1", [retailerId]);
-    if (!retailerRows[0]) return res.status(404).json({ error: "Retailer not found." });
+    const retailer = retailerRows[0];
+    if (!retailer) return res.status(404).json({ error: "Retailer not found." });
+    if (retailer.network_source === "GTM Partner") {
+      return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Opportunity." });
+    }
 
     const { rows } = await pool.query(
-      `INSERT INTO introductions (initiated_by, startup_id, retailer_id, network_source, status)
-       VALUES ('RIV Admin', $1, $2, $3, $4) RETURNING *`,
-      [startupId, retailerId, retailerRows[0].network_source, status || "Approved"]
+      `INSERT INTO introductions (initiated_by, startup_id, retailer_id, network_source, status, approval_status, gtm_context_note)
+       VALUES ('RIV Admin', $1, $2, $3, 'Approved', 'Startup Confirmed', $4) RETURNING *`,
+      [startupId, retailerId, retailer.network_source, context || null]
     );
+    await notifyStartup(startupId, "New opportunity from RIV", rows[0].id);
     res.status(201).json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -508,6 +570,57 @@ router.put("/introductions/:id/reject", async (req, res, next) => {
   }
 });
 
+// PUT /api/admin/introductions/:id/log-riv-proof — RIV-direct proof
+// logging (25 Sep 2026 batch, item 8), brought in line with the GTM
+// partner's log-introduction flow: a required uploaded screenshot/PDF, not
+// just free text. No signed declaration checkbox (admin is already
+// trusted, unlike a GTM partner). Sets the same status transition
+// (status='Introduced', approval_status='Proof Recorded') as the partner
+// flow, and stores the file separately in riv_proof_attachment so it's
+// clear in the data which side logged it, while proof_of_introduction
+// (TEXT) is still set to the file's name for anything that only reads that
+// column.
+router.put("/introductions/:id/log-riv-proof", handleProofAttachmentUpload, async (req, res, next) => {
+  try {
+    const { channel, introductionDate } = req.body || {};
+    if (!req.file) return res.status(400).json({ error: "Attach proof of introduction (a screenshot or PDF) before this can be logged." });
+
+    const { rows: introRows } = await pool.query("SELECT * FROM introductions WHERE id = $1", [req.params.id]);
+    const intro = introRows[0];
+    if (!intro) return res.status(404).json({ error: "Introduction not found." });
+
+    const rivProofAttachment = await uploadProofAttachment(req.file, { introId: req.params.id });
+
+    const { rows } = await pool.query(
+      `UPDATE introductions
+       SET channel = $2, introduction_date = COALESCE($3, CURRENT_DATE), proof_of_introduction = $4,
+           riv_proof_attachment = $5::jsonb, status = 'Introduced', approval_status = 'Proof Recorded',
+           updated_at = now(), updated_by = $6
+       WHERE id = $1 RETURNING *`,
+      [req.params.id, channel || "Email", introductionDate || null, rivProofAttachment.name, JSON.stringify(rivProofAttachment), req.user.name]
+    );
+    await notifyStartup(intro.startup_id, "Introduction made", intro.id);
+    res.json({ introduction: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/introductions/:id/riv-proof-attachment — signed download
+// link for the RIV-direct proof file logged above.
+router.get("/introductions/:id/riv-proof-attachment", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT riv_proof_attachment FROM introductions WHERE id = $1", [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
+    if (!rows[0].riv_proof_attachment) return res.status(404).json({ error: "No RIV-direct proof attachment on file." });
+
+    const url = await getSignedUrl(rows[0].riv_proof_attachment.path);
+    res.redirect(url);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PUT /api/admin/introductions/:id — admin override: any field, including
 // status/approval_status (full visibility + override per PRD §9). Covers
 // the RIV Direct case where there's no GTM partner login to log the
@@ -530,6 +643,13 @@ router.put("/introductions/:id", async (req, res, next) => {
     // records it here based on what the startup told them off-system).
     if (f.startupCommitStatus && !COMMIT_STATUSES.includes(f.startupCommitStatus)) {
       return res.status(400).json({ error: `startupCommitStatus must be one of: ${COMMIT_STATUSES.join(", ")}` });
+    }
+    // Item 14 (server-side guard), admin's phone/email-fallback path.
+    if (f.startupCommitStatus) {
+      const { rows: existingRows } = await pool.query("SELECT engagement_stage FROM introductions WHERE id = $1", [req.params.id]);
+      if (existingRows[0] && ["Closed - Won", "Closed - Lost", "Stalled"].includes(existingRows[0].engagement_stage)) {
+        return res.status(400).json({ error: "Commit Status is read-only once the deal has reached a closed stage." });
+      }
     }
 
     // Rate lock at Closed-Won (18 Sep 2026 admin requirement): when this
