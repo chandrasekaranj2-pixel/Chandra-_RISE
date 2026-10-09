@@ -1820,31 +1820,109 @@ function AdminOverview({ onNavigate }) {
   );
 }
 
+// 9 Oct 2026 batch, item 2 — full admin edit for a GTM partner: every
+// field the backend's PUT /admin/partners/:id already accepts (see
+// admin.js), including the commission/rate override fields RIV needs as
+// final decision-maker. Email is intentionally excluded — the backend
+// route doesn't update it (it's tied to the provisioned login), so it's
+// shown read-only here rather than offered as an editable field that
+// would silently do nothing.
+function EditPartnerModal({ partner, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    fullName: partner.full_name || "", company: partner.company || "", phone: partner.phone || "",
+    linkedinUrl: partner.linkedin_url || "", region: partner.region || "",
+    onboardingStage: partner.onboarding_stage || "New", agreementLink: partner.agreement_link || "",
+    agreementSignedDate: partner.agreement_signed_date ? partner.agreement_signed_date.slice(0, 10) : "",
+    defaultPayoutSplit: partner.default_payout_split ?? "", revenueShareOverride: partner.revenue_share_override ?? "",
+    riv_owner: partner.riv_owner || "", status: partner.status || "Active", notes: partner.notes || "",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updatePartner(partner.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${partner.full_name}`} onClose={onClose} width={520}>
+      <ErrorBanner text={error} />
+      <Field label="Email" hint="Login email — change by re-provisioning.">
+        <input style={{ ...inputStyle, color: "#9B958F" }} value={partner.email} disabled />
+      </Field>
+      <Field label="Full name"><input style={inputStyle} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
+      <Field label="Company"><input style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} /></Field>
+      <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="LinkedIn URL"><input style={inputStyle} value={form.linkedinUrl} onChange={(e) => setForm({ ...form, linkedinUrl: e.target.value })} /></Field>
+      <Field label="Region"><input style={inputStyle} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></Field>
+      <Field label="Onboarding stage">
+        <select style={inputStyle} value={form.onboardingStage} onChange={(e) => setForm({ ...form, onboardingStage: e.target.value })}>
+          <option>New</option><option>Agreement Sent</option><option>Signed</option><option>Onboarded</option>
+        </select>
+      </Field>
+      <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
+      <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
+      <Field label="Default payout split (%)"><input style={inputStyle} type="number" step="0.1" value={form.defaultPayoutSplit} onChange={(e) => setForm({ ...form, defaultPayoutSplit: e.target.value })} /></Field>
+      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
+        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
+      </Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active</option><option>Inactive</option>
+        </select>
+      </Field>
+      <Field label="Notes"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.fullName} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
+  );
+}
+
 function AdminPartnersView() {
   const [partners, setPartners] = useState(null);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ fullName: "", company: "", email: "", phone: "", region: "" });
   const [provisioning, setProvisioning] = useState(null);
   const [pwField, setPwField] = useState("");
+  // item 13 — guards against a double-click/double-submit on Provision
+  // firing two overlapping POSTs before the first one's response (and the
+  // resulting portal_login_status flip) comes back and hides the button.
+  const [provisionBusy, setProvisionBusy] = useState(false);
+  const [editingPartner, setEditingPartner] = useState(null);
 
   const load = useCallback(() => api.listPartners().then((r) => setPartners(r.partners)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
   async function createPartner() {
     setError("");
-    try { await api.createPartner(form); setShowNew(false); setForm({ fullName: "", company: "", email: "", phone: "", region: "" }); load(); }
+    try {
+      await api.createPartner(form);
+      setShowNew(false);
+      setForm({ fullName: "", company: "", email: "", phone: "", region: "" });
+      load();
+      showSuccess(`${form.fullName} was added as a new GTM partner.`);
+    }
     catch (e) { setError(e.message); }
   }
   async function provision(p) {
-    setError("");
-    try { await api.provisionPartnerLogin(p.id, pwField); setProvisioning(null); setPwField(""); load(); }
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionPartnerLogin(p.id, pwField); setProvisioning(null); setPwField(""); await load(); }
     catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
   }
 
   if (error) return <ErrorBanner text={error} />;
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New partner</PrimaryButton>
       </div>
@@ -1864,14 +1942,17 @@ function AdminPartnersView() {
               <span>{money(p.fees_earned)} fees earned</span>
             </div>
           </div>
-          {p.portal_login_status !== "Provisioned" && (
-            provisioning === p.id ? (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8}>Provision</PrimaryButton>
-              </div>
-            ) : <GhostButton onClick={() => setProvisioning(p.id)}>Provision login</GhostButton>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <GhostButton onClick={() => setEditingPartner(p)}>Edit</GhostButton>
+            {p.portal_login_status !== "Provisioned" && (
+              provisioning === p.id ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
+                  <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
+                </div>
+              ) : <GhostButton onClick={() => setProvisioning(p.id)}>Provision login</GhostButton>
+            )}
+          </div>
         </Card>
       ))}
       {showNew && (
@@ -1884,6 +1965,9 @@ function AdminPartnersView() {
           <Field label="Region"><input style={inputStyle} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></Field>
           <PrimaryButton onClick={createPartner} disabled={!form.fullName || !form.email} style={{ width: "100%" }}>Create partner</PrimaryButton>
         </Modal>
+      )}
+      {editingPartner && (
+        <EditPartnerModal partner={editingPartner} onClose={() => setEditingPartner(null)} onSaved={load} />
       )}
     </div>
   );
