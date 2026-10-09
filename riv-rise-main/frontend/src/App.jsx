@@ -2234,13 +2234,82 @@ const ADMIN_RETAILER_TABS = [
   { id: "RIV Direct", label: "RIV Direct" },
   { id: "All", label: "All" },
 ];
+// 9 Oct 2026 batch, item 2 — full admin edit for a retailer, every field
+// PUT /admin/retailers/:id accepts, including network source / GTM partner
+// and status, so RIV admin can correct anything as final decision-maker.
+function EditRetailerModal({ retailer, partners, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: retailer.name || "", brand: retailer.brand || "", website: retailer.website || "",
+    hqCountry: retailer.hq_country || "", category: retailer.category || "", location: retailer.location || "",
+    networkSource: retailer.network_source || "RIV Direct", owningPartnerId: retailer.owning_partner_id || "",
+    contactName: retailer.contact_name || "", contactDesignation: retailer.contact_designation || "",
+    contactEmail: retailer.contact_email || "", contactPhone: retailer.contact_phone || "",
+    riv_owner: retailer.riv_owner || "", status: retailer.status || "Active in network",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updateRetailer(retailer.id, { ...form, owningPartnerId: form.owningPartnerId || null });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${retailer.brand || retailer.name}`} onClose={onClose} width={520}>
+      <ErrorBanner text={error} />
+      <Field label="Name" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+      <Field label="Brand"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
+      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="Category"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+      <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Network source">
+        <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
+          <option>RIV Direct</option><option>GTM Partner</option>
+        </select>
+      </Field>
+      {/* item 8 — relabeled "GTM partner" (was "Owning partner"), required
+          whenever a retailer sits in a GTM partner's network. */}
+      {form.networkSource === "GTM Partner" && (
+        <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
+          <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
+            <option value="">Select…</option>
+            {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Contact name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
+      <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
+      <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
+      <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active in network</option><option>Prospect</option><option>In Process</option><option>Duplicate</option><option>Rejected</option>
+        </select>
+      </Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.name || gtmPartnerMissing} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
+  );
+}
+
 function AdminRetailersView() {
   const [retailers, setRetailers] = useState(null);
   const [partners, setPartners] = useState([]);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const [tab, setTab] = useState("All");
   const [form, setForm] = useState({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
+  const [editingRetailer, setEditingRetailer] = useState(null);
+  // item 8 — GTM partner is mandatory once Network source is "GTM Partner".
+  const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
 
   const load = useCallback(() => api.listRetailersAdmin().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); api.listPartners().then((r) => setPartners(r.partners)).catch(() => {}); }, [load]);
@@ -2252,6 +2321,7 @@ function AdminRetailersView() {
       setShowNew(false);
       setForm({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
       load();
+      showSuccess(`${form.brand || form.name} was added as a new retailer.`);
     } catch (e) { setError(e.message); }
   }
   async function approve(id) {
@@ -2274,6 +2344,7 @@ function AdminRetailersView() {
   const visibleRetailers = (retailers || []).filter((r) => tab === "All" || r.network_source === tab);
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", gap: 4 }}>
           {ADMIN_RETAILER_TABS.map((t) => (
@@ -2304,6 +2375,7 @@ function AdminRetailersView() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
               <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabelForAdmin(r.status)} />
+              <GhostButton onClick={() => setEditingRetailer(r)}>Edit</GhostButton>
               {["Prospect", "Duplicate"].includes(r.status) && <GhostButton onClick={() => markInProcess(r.id)}>Mark In Process</GhostButton>}
               {r.status !== "Active in network" && r.status !== "Rejected" && <PrimaryButton onClick={() => approve(r.id)}>Approve</PrimaryButton>}
             </div>
@@ -2328,12 +2400,15 @@ function AdminRetailersView() {
           <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
           <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
           <Field label="Network source">
-            <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value })}>
+            <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
               <option>RIV Direct</option><option>GTM Partner</option>
             </select>
           </Field>
+          {/* item 8 (9 Oct 2026 batch) — relabeled "GTM partner" (was
+              "Owning partner") and made required whenever a retailer is
+              being added to a GTM partner's network, not just optional. */}
           {form.networkSource === "GTM Partner" && (
-            <Field label="Owning partner">
+            <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
               <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
                 <option value="">Select…</option>
                 {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
@@ -2344,8 +2419,11 @@ function AdminRetailersView() {
           <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
           <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
           <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-          <PrimaryButton onClick={createRetailer} disabled={!form.name} style={{ width: "100%" }}>Create retailer</PrimaryButton>
+          <PrimaryButton onClick={createRetailer} disabled={!form.name || gtmPartnerMissing} style={{ width: "100%" }}>Create retailer</PrimaryButton>
         </Modal>
+      )}
+      {editingRetailer && (
+        <EditRetailerModal retailer={editingRetailer} partners={partners} onClose={() => setEditingRetailer(null)} onSaved={load} />
       )}
     </div>
   );
