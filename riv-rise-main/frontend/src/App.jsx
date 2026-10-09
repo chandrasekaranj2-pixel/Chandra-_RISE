@@ -1105,6 +1105,10 @@ function AddRetailerModal({ onClose, onCreated }) {
     finally { setBusy(false); }
   }
 
+  // item 9 (9 Oct 2026 batch) — every field required except phone.
+  const requiredFilled = form.name && form.brand && form.website && form.location
+    && form.hqCountry && form.category && form.contactName && form.contactDesignation && form.contactEmail;
+
   return (
     <Modal title="Add Retailer to RIV network" onClose={onClose} width={520}>
       <ErrorBanner text={error} />
@@ -1112,16 +1116,16 @@ function AddRetailerModal({ onClose, onCreated }) {
         Submissions are reviewed by RIV before appearing in the approved directory.
       </div>
       <Field label="Retail enterprise you are referring" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-      <Field label="Brand you are introducing to"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
-      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
-      <Field label="City where enterprise is headquartered"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
-      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
-      <Field label="Retail segment"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
-      <Field label="Enterprise contact — full name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
-      <Field label="Enterprise contact — designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
-      <Field label="Enterprise contact — email"><input style={inputStyle} type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
-      <Field label="Enterprise contact — phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-      <PrimaryButton onClick={submit} disabled={busy || !form.name} style={{ width: "100%" }}>Submit for review</PrimaryButton>
+      <Field label="Brand you are introducing to" required><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
+      <Field label="Website" required><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="City where enterprise is headquartered" required><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+      <Field label="HQ country" required><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Retail segment" required><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+      <Field label="Enterprise contact — full name" required><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
+      <Field label="Enterprise contact — designation" required><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
+      <Field label="Enterprise contact — email" required><input style={inputStyle} type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
+      <Field label="Enterprise contact — phone" hint="Optional."><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+      <PrimaryButton onClick={submit} disabled={busy || !requiredFilled} style={{ width: "100%" }}>Submit for review</PrimaryButton>
     </Modal>
   );
 }
