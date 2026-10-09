@@ -1973,9 +1973,119 @@ function AdminPartnersView() {
   );
 }
 
+// 9 Oct 2026 batch, item 2 — full admin edit for a RISE startup, covering
+// every field the backend's PUT /admin/startups/:id accepts (admin.js),
+// including the commission (revenue share) override and the fee/equity
+// onboarding fields — RIV admin is the final decision-maker on all of
+// these, not just the basics shown on the card. Email is read-only here
+// for the same reason as EditPartnerModal.
+function EditStartupModal({ startup, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    startupName: startup.startup_name || "", founderName: startup.founder_name || "", phone: startup.phone || "",
+    sector: startup.sector || "", solutionSummary: startup.solution_summary || "",
+    onboardingStage: startup.onboarding_stage || "New", agreementLink: startup.agreement_link || "",
+    agreementSignedDate: startup.agreement_signed_date ? startup.agreement_signed_date.slice(0, 10) : "",
+    participationFeeStatus: startup.participation_fee_status || "Pending",
+    participationFeeDueDate: startup.participation_fee_due_date ? startup.participation_fee_due_date.slice(0, 10) : "",
+    equityPct: startup.equity_pct ?? "", revenueShareOverride: startup.revenue_share_override ?? "",
+    riv_owner: startup.riv_owner || "", status: startup.status || "Active", notes: startup.notes || "",
+    legalEntity: startup.legal_entity || "", website: startup.website || "", city: startup.city || "",
+    hqCountry: startup.hq_country || "", yearIncorporated: startup.year_incorporated || "",
+    foundingTeamDetails: startup.founding_team_details || "",
+    problemDescription: startup.problem_description || "", solutionDescription: startup.solution_description || "",
+    topBenefits: startup.top_benefits || "", techStack: startup.tech_stack || "", subVertical: startup.sub_vertical || "",
+    competition: startup.competition || "", competitiveAdvantage: startup.competitive_advantage || "",
+    payingCustomerCount: startup.paying_customer_count || "", notableCustomers: startup.notable_customers || "",
+    keyMilestones: startup.key_milestones || "", pastFundRaised: startup.past_fund_raised || "",
+    currentlyRaisingCapital: startup.currently_raising_capital || "", fundraisingSupportInterest: startup.fundraising_support_interest || "",
+    additionalNotes: startup.additional_notes || "",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updateStartup(startup.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride, equityPct: form.equityPct === "" ? null : form.equityPct });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${startup.startup_name}`} onClose={onClose} width={560}>
+      <ErrorBanner text={error} />
+      <Field label="Email" hint="Login email — change by re-provisioning."><input style={{ ...inputStyle, color: "#9B958F" }} value={startup.email} disabled /></Field>
+      <Field label="Startup name"><input style={inputStyle} value={form.startupName} onChange={(e) => setForm({ ...form, startupName: e.target.value })} /></Field>
+      <Field label="Founder name"><input style={inputStyle} value={form.founderName} onChange={(e) => setForm({ ...form, founderName: e.target.value })} /></Field>
+      <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="Sector"><input style={inputStyle} value={form.sector} onChange={(e) => setForm({ ...form, sector: e.target.value })} /></Field>
+      <Field label="Solution summary"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.solutionSummary} onChange={(e) => setForm({ ...form, solutionSummary: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>Onboarding &amp; commercial terms</div>
+      <Field label="Onboarding stage">
+        <select style={inputStyle} value={form.onboardingStage} onChange={(e) => setForm({ ...form, onboardingStage: e.target.value })}>
+          <option>New</option><option>Agreement Sent</option><option>Signed</option><option>Onboarded</option>
+        </select>
+      </Field>
+      <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
+      <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
+      <Field label="Participation fee status">
+        <select style={inputStyle} value={form.participationFeeStatus} onChange={(e) => setForm({ ...form, participationFeeStatus: e.target.value })}>
+          <option>Pending</option><option>Paid</option>
+        </select>
+      </Field>
+      <Field label="Participation fee due date"><input style={inputStyle} type="date" value={form.participationFeeDueDate} onChange={(e) => setForm({ ...form, participationFeeDueDate: e.target.value })} /></Field>
+      <Field label="Equity (%)"><input style={inputStyle} type="number" step="0.01" value={form.equityPct} onChange={(e) => setForm({ ...form, equityPct: e.target.value })} /></Field>
+      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
+        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
+      </Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active</option><option>Inactive</option>
+        </select>
+      </Field>
+      <Field label="Internal notes"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>RISE GTM Application Form fields</div>
+      <Field label="Legal entity"><input style={inputStyle} value={form.legalEntity} onChange={(e) => setForm({ ...form, legalEntity: e.target.value })} /></Field>
+      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="City"><input style={inputStyle} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Field>
+      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Year incorporated"><input style={inputStyle} value={form.yearIncorporated} onChange={(e) => setForm({ ...form, yearIncorporated: e.target.value })} /></Field>
+      <Field label="Founding team details / qualifications"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.foundingTeamDetails} onChange={(e) => setForm({ ...form, foundingTeamDetails: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>Startup Detail View fields</div>
+      <Field label="Problem description"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.problemDescription} onChange={(e) => setForm({ ...form, problemDescription: e.target.value })} /></Field>
+      <Field label="Solution"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.solutionDescription} onChange={(e) => setForm({ ...form, solutionDescription: e.target.value })} /></Field>
+      <Field label="Top 3 benefits"><input style={inputStyle} value={form.topBenefits} onChange={(e) => setForm({ ...form, topBenefits: e.target.value })} /></Field>
+      <Field label="Tech stack"><input style={inputStyle} value={form.techStack} onChange={(e) => setForm({ ...form, techStack: e.target.value })} /></Field>
+      <Field label="Sub-vertical"><input style={inputStyle} value={form.subVertical} onChange={(e) => setForm({ ...form, subVertical: e.target.value })} /></Field>
+      <Field label="Competition"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.competition} onChange={(e) => setForm({ ...form, competition: e.target.value })} /></Field>
+      <Field label="Competitive advantage"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.competitiveAdvantage} onChange={(e) => setForm({ ...form, competitiveAdvantage: e.target.value })} /></Field>
+      <Field label="Paying customer count"><input style={inputStyle} value={form.payingCustomerCount} onChange={(e) => setForm({ ...form, payingCustomerCount: e.target.value })} /></Field>
+      <Field label="Notable customers"><input style={inputStyle} value={form.notableCustomers} onChange={(e) => setForm({ ...form, notableCustomers: e.target.value })} /></Field>
+      <Field label="Key milestones"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.keyMilestones} onChange={(e) => setForm({ ...form, keyMilestones: e.target.value })} /></Field>
+      <Field label="Past fund raised"><input style={inputStyle} value={form.pastFundRaised} onChange={(e) => setForm({ ...form, pastFundRaised: e.target.value })} /></Field>
+      <Field label="Currently raising capital?">
+        <select style={inputStyle} value={form.currentlyRaisingCapital} onChange={(e) => setForm({ ...form, currentlyRaisingCapital: e.target.value })}>
+          <option value="">— None —</option><option>Yes</option><option>No</option>
+        </select>
+      </Field>
+      <Field label="Interested in fundraising support from RIV?">
+        <select style={inputStyle} value={form.fundraisingSupportInterest} onChange={(e) => setForm({ ...form, fundraisingSupportInterest: e.target.value })}>
+          <option value="">— None —</option><option>Yes</option><option>No</option>
+        </select>
+      </Field>
+      <Field label="Anything else"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.additionalNotes} onChange={(e) => setForm({ ...form, additionalNotes: e.target.value })} /></Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.startupName} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
+  );
+}
+
 function AdminStartupsView() {
   const [startups, setStartups] = useState(null);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const blankForm = {
     startupName: "", founderName: "", email: "", sector: "", solutionSummary: "",
@@ -1987,25 +2097,36 @@ function AdminStartupsView() {
   const [form, setForm] = useState(blankForm);
   const [provisioning, setProvisioning] = useState(null);
   const [pwField, setPwField] = useState("");
+  const [provisionBusy, setProvisionBusy] = useState(false); // item 13
   const [detailStartupId, setDetailStartupId] = useState(null);
+  const [editingStartup, setEditingStartup] = useState(null);
 
   const load = useCallback(() => api.listStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
   async function createStartup() {
     setError("");
-    try { await api.createStartup(form); setShowNew(false); setForm(blankForm); load(); }
+    try {
+      await api.createStartup(form);
+      setShowNew(false);
+      setForm(blankForm);
+      load();
+      showSuccess(`${form.startupName} was added as a new RISE startup.`);
+    }
     catch (e) { setError(e.message); }
   }
   async function provision(s) {
-    setError("");
-    try { await api.provisionStartupLogin(s.id, pwField); setProvisioning(null); setPwField(""); load(); }
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionStartupLogin(s.id, pwField); setProvisioning(null); setPwField(""); await load(); }
     catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
   }
 
   if (error) return <ErrorBanner text={error} />;
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New startup</PrimaryButton>
       </div>
@@ -2027,11 +2148,12 @@ function AdminStartupsView() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <GhostButton onClick={() => setDetailStartupId(s.id)}>View Details</GhostButton>
+            <GhostButton onClick={() => setEditingStartup(s)}>Edit</GhostButton>
             {s.portal_login_status !== "Provisioned" && (
               provisioning === s.id ? (
                 <div style={{ display: "flex", gap: 8 }}>
                   <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8}>Provision</PrimaryButton>
+                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
                 </div>
               ) : <GhostButton onClick={() => setProvisioning(s.id)}>Provision login</GhostButton>
             )}
@@ -2080,6 +2202,7 @@ function AdminStartupsView() {
         </Modal>
       )}
       {detailStartupId && <StartupDetailModal startupId={detailStartupId} onClose={() => setDetailStartupId(null)} />}
+      {editingStartup && <EditStartupModal startup={editingStartup} onClose={() => setEditingStartup(null)} onSaved={load} />}
     </div>
   );
 }
