@@ -495,7 +495,7 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     ...(isRivInitiated ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
     ["Actual Introduction status", introducedStatusFor(intro.status, intro.engagement_stage)],
     ["Deal Status", intro.engagement_stage || "—"],
-    ["Opportunity Value", money(intro.opportunity_value)],
+    ["Opportunity Value", opportunityMoney(intro.opportunity_value)],
     ["Startup Commit Status", intro.startup_commit_status || "Not yet responded"],
     ["Last Updated", `${dateStr(intro.updated_at)}${intro.updated_by ? ` · ${intro.updated_by}` : ""}`],
   ];
@@ -1185,21 +1185,32 @@ function DealStatusCell({ intro, onSave }) {
   );
 }
 
+// 9 Oct 2026 batch, item 7 — Opportunity Value display with a $ prefix
+// (it's a USD figure, unlike every other amount in the app which is ₹ via
+// money()). No currency conversion here, just the symbol — the stored
+// number is shown as-is.
+function opportunityMoney(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  return `$${Number(n).toLocaleString("en-US")}`;
+}
 // Opportunity Value input — editable only once Introduction Status is
 // "Introduced" AND Deal Status isn't yet "Closed - Won" (PRD Tab 1 items
 // 9–10 / Tab 2 items 11–12); read-only display in every other case.
 function OpportunityValueCell({ intro, onSave }) {
   const editable = intro.status === "Introduced" && intro.engagement_stage !== "Closed - Won";
   if (!editable) {
-    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{money(intro.opportunity_value)}</span>;
+    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{opportunityMoney(intro.opportunity_value)}</span>;
   }
   return (
-    <input
-      style={{ ...inputStyle, minWidth: 130 }}
-      type="number"
-      defaultValue={intro.opportunity_value || ""}
-      onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
-    />
+    <div style={{ position: "relative", minWidth: 130 }}>
+      <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontFamily: FONT, fontSize: 13.5, color: "#9B958F", pointerEvents: "none" }}>$</span>
+      <input
+        style={{ ...inputStyle, paddingLeft: 22 }}
+        type="number"
+        defaultValue={intro.opportunity_value || ""}
+        onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
+      />
+    </div>
   );
 }
 
@@ -1722,7 +1733,7 @@ function PartnerDashboardView({ refreshKey }) {
             <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
             <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}>{i.engagement_stage ? <StatusBadge status={i.engagement_stage} colors={DEAL_STATUS_COLORS} /> : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
-            <td style={cellStyle}>{money(i.opportunity_value)}</td>
+            <td style={cellStyle}>{opportunityMoney(i.opportunity_value)}</td>
             <td style={cellStyle}>{expectedFee(i) != null ? usdFee(expectedFee(i)) : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
             <td style={cellStyle}><GhostButton onClick={() => setDetailIntro(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
           </tr>
@@ -2147,7 +2158,7 @@ function AdminStartupsView() {
             <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#7A756F", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
               <span>{s.active_introduction_count ?? 0} active introduction{s.active_introduction_count === 1 ? "" : "s"}</span>
               <span>{s.closed_won_count ?? 0} closed – won</span>
-              <span>{money(s.total_opportunity_value)} total opportunity value</span>
+              <span>{opportunityMoney(s.total_opportunity_value)} total opportunity value</span>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
