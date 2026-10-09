@@ -438,8 +438,11 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
     if (dupRows[0]) {
       const dup = dupRows[0];
       const initiatorLabel = dup.initiated_by === "RIV Admin" ? "RIV" : dup.initiated_by;
+      // 9 Oct 2026 batch — dropped the embedded interestStatusForServer(...)
+      // ("Awaiting Startup interest" etc.) from this message; that wording
+      // is admin/startup-only now, not shown in the GTM partner's flow.
       return res.status(409).json({
-        error: `${dup.startup_name} has already been introduced to ${dup.retailer_name} — this pairing is already in the pipeline (Initiated by ${initiatorLabel}, currently ${interestStatusForServer(dup.approval_status)}). Check the list below instead of submitting a duplicate.`,
+        error: `${dup.startup_name} has already been introduced to ${dup.retailer_name} — this pairing is already in the pipeline (Initiated by ${initiatorLabel}). Check the list below instead of submitting a duplicate.`,
       });
     }
 

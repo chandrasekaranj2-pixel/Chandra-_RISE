@@ -495,7 +495,11 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     ["Network", intro.partner_name ? `via ${intro.partner_name}` : "RIV direct"],
     ["Initiated by", initiatorLabel(intro.initiated_by)],
     [isRivInitiated ? "Initiated Date" : "Requested Date", dateStr(intro.request_date)],
-    ...(isRivInitiated ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
+    // 9 Oct 2026 batch — "Introduction interest status" row (and its
+    // "Awaiting Startup interest" wording) is admin/startup-only now; the
+    // GTM partner's flow dropped it (see CheckIntroductionInterestSection /
+    // PartnerDashboardView, and the simplified 409 copy in portal.js).
+    ...(isRivInitiated || isPartner ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
     ["Actual Introduction status", introducedStatusFor(intro.status, intro.engagement_stage)],
     ["Deal Status", intro.engagement_stage || "—"],
     ["Opportunity Value", opportunityMoney(intro.opportunity_value)],
@@ -550,7 +554,7 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
       )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />
+        {!isPartner && <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />}
         <StatusBadge status={introducedStatusFor(intro.status, intro.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
         {intro.engagement_stage && <StatusBadge status={intro.engagement_stage} />}
       </div>
@@ -1525,12 +1529,11 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
                 in portal.js), but check generically in case that changes. */}
             {i.duplicate_of_introduction_id && (
               <div style={{ fontFamily: FONT, fontSize: 11, color: "#8A6D00", marginTop: 4 }}>
-                Possible duplicate — already in the pipeline since {dateStr(i.duplicate_of_request_date)}, currently {interestStatusFor(i.duplicate_of_approval_status)}.
+                Possible duplicate — already in the pipeline since {dateStr(i.duplicate_of_request_date)}.
               </div>
             )}
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
             <StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
           </div>
         </Card>
@@ -1723,7 +1726,7 @@ function PartnerDashboardView({ refreshKey }) {
         </Card>
       </div>
       <IntroTable
-        columns={["Retailer", "Startup", "Initiated by", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee", ""]}
+        columns={["Retailer", "Startup", "Initiated by", "Actual Introduction status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee", ""]}
         rows={intros}
         emptyIcon={Handshake}
         emptyTitle="No introductions yet"
@@ -1733,7 +1736,6 @@ function PartnerDashboardView({ refreshKey }) {
             <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
             <td style={cellStyle}>{i.startup_name}</td>
             <td style={cellStyle}>{initiatorLabel(i.initiated_by)}</td>
-            <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
             <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}>{i.engagement_stage ? <StatusBadge status={i.engagement_stage} colors={DEAL_STATUS_COLORS} /> : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
             <td style={cellStyle}>{opportunityMoney(i.opportunity_value)}</td>
