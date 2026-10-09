@@ -49,9 +49,12 @@ const APPROVAL_COLORS = {
 // 21 Sep 2026 addendum — the startup's "RIV Approval Status" column shows
 // the real approval_status flag as-is (RIV's call), EXCEPT "GTM Notified":
 // that's internal plumbing (RIV has approved and told the GTM partner) —
-// from the startup's side it just reads as "RIV Approved". Admin/partner
-// screens keep showing the raw "GTM Notified" flag; this relabeling is
-// startup-display only.
+// from the startup's side it just reads as "RIV Approved". Partner screens
+// keep showing the raw "GTM Notified" flag.
+// 9 Oct 2026 batch, item 6 — admin's own introductions list ("Detail:"
+// badge in AdminIntroductionsView) now also runs through this, so admin
+// sees "RIV Approved" instead of the internal "GTM Notified" plumbing
+// state too, matching what the startup sees.
 function approvalStatusForStartup(approvalStatus) {
   return approvalStatus === "GTM Notified" ? "RIV Approved" : approvalStatus;
 }
@@ -214,6 +217,29 @@ function ErrorBanner({ text }) {
       <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{text}</div>
     </div>
   );
+}
+// 9 Oct 2026 batch, item 1 — acknowledgement banner for a successful
+// create action (new GTM partner, new retailer, etc.), same shape as
+// ErrorBanner but green. Callers clear it themselves (e.g. on the next
+// edit or after a short timeout) — see useSuccessMessage() below.
+function SuccessBanner({ text }) {
+  if (!text) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderRadius: 12, background: "#E6F4EA", border: "1px solid #BFE3C9", marginBottom: 16 }}>
+      <CheckCircle2 size={15} color="#1E7A34" />
+      <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{text}</div>
+    </div>
+  );
+}
+// Small helper: holds a success message and auto-clears it after a few
+// seconds, so callers don't have to manage their own timers.
+function useSuccessMessage() {
+  const [message, setMessage] = useState("");
+  function show(text) {
+    setMessage(text);
+    setTimeout(() => setMessage((m) => (m === text ? "" : m)), 4000);
+  }
+  return [message, show];
 }
 function Spinner({ label }) {
   return (
@@ -469,10 +495,14 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     ["Network", intro.partner_name ? `via ${intro.partner_name}` : "RIV direct"],
     ["Initiated by", initiatorLabel(intro.initiated_by)],
     [isRivInitiated ? "Initiated Date" : "Requested Date", dateStr(intro.request_date)],
-    ...(isRivInitiated ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
+    // 9 Oct 2026 batch — "Introduction interest status" row (and its
+    // "Awaiting Startup interest" wording) is admin/startup-only now; the
+    // GTM partner's flow dropped it (see CheckIntroductionInterestSection /
+    // PartnerDashboardView, and the simplified 409 copy in portal.js).
+    ...(isRivInitiated || isPartner ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
     ["Actual Introduction status", introducedStatusFor(intro.status, intro.engagement_stage)],
     ["Deal Status", intro.engagement_stage || "—"],
-    ["Opportunity Value", money(intro.opportunity_value)],
+    ["Opportunity Value", opportunityMoney(intro.opportunity_value)],
     ["Startup Commit Status", intro.startup_commit_status || "Not yet responded"],
     ["Last Updated", `${dateStr(intro.updated_at)}${intro.updated_by ? ` · ${intro.updated_by}` : ""}`],
   ];
@@ -524,7 +554,7 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
       )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />
+        {!isPartner && <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />}
         <StatusBadge status={introducedStatusFor(intro.status, intro.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
         {intro.engagement_stage && <StatusBadge status={intro.engagement_stage} />}
       </div>
@@ -1082,6 +1112,10 @@ function AddRetailerModal({ onClose, onCreated }) {
     finally { setBusy(false); }
   }
 
+  // item 9 (9 Oct 2026 batch) — every field required except phone.
+  const requiredFilled = form.name && form.brand && form.website && form.location
+    && form.hqCountry && form.category && form.contactName && form.contactDesignation && form.contactEmail;
+
   return (
     <Modal title="Add Retailer to RIV network" onClose={onClose} width={520}>
       <ErrorBanner text={error} />
@@ -1089,16 +1123,16 @@ function AddRetailerModal({ onClose, onCreated }) {
         Submissions are reviewed by RIV before appearing in the approved directory.
       </div>
       <Field label="Retail enterprise you are referring" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-      <Field label="Brand you are introducing to"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
-      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
-      <Field label="City where enterprise is headquartered"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
-      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
-      <Field label="Retail segment"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
-      <Field label="Enterprise contact — full name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
-      <Field label="Enterprise contact — designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
-      <Field label="Enterprise contact — email"><input style={inputStyle} type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
-      <Field label="Enterprise contact — phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-      <PrimaryButton onClick={submit} disabled={busy || !form.name} style={{ width: "100%" }}>Submit for review</PrimaryButton>
+      <Field label="Brand you are introducing to" required><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
+      <Field label="Website" required><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="City where enterprise is headquartered" required><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+      <Field label="HQ country" required><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Retail segment" required><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+      <Field label="Enterprise contact — full name" required><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
+      <Field label="Enterprise contact — designation" required><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
+      <Field label="Enterprise contact — email" required><input style={inputStyle} type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
+      <Field label="Enterprise contact — phone" hint="Optional."><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+      <PrimaryButton onClick={submit} disabled={busy || !requiredFilled} style={{ width: "100%" }}>Submit for review</PrimaryButton>
     </Modal>
   );
 }
@@ -1158,21 +1192,32 @@ function DealStatusCell({ intro, onSave }) {
   );
 }
 
+// 9 Oct 2026 batch, item 7 — Opportunity Value display with a $ prefix
+// (it's a USD figure, unlike every other amount in the app which is ₹ via
+// money()). No currency conversion here, just the symbol — the stored
+// number is shown as-is.
+function opportunityMoney(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  return `$${Number(n).toLocaleString("en-US")}`;
+}
 // Opportunity Value input — editable only once Introduction Status is
 // "Introduced" AND Deal Status isn't yet "Closed - Won" (PRD Tab 1 items
 // 9–10 / Tab 2 items 11–12); read-only display in every other case.
 function OpportunityValueCell({ intro, onSave }) {
   const editable = intro.status === "Introduced" && intro.engagement_stage !== "Closed - Won";
   if (!editable) {
-    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{money(intro.opportunity_value)}</span>;
+    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{opportunityMoney(intro.opportunity_value)}</span>;
   }
   return (
-    <input
-      style={{ ...inputStyle, minWidth: 130 }}
-      type="number"
-      defaultValue={intro.opportunity_value || ""}
-      onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
-    />
+    <div style={{ position: "relative", minWidth: 130 }}>
+      <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontFamily: FONT, fontSize: 13.5, color: "#9B958F", pointerEvents: "none" }}>$</span>
+      <input
+        style={{ ...inputStyle, paddingLeft: 22 }}
+        type="number"
+        defaultValue={intro.opportunity_value || ""}
+        onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
+      />
+    </div>
   );
 }
 
@@ -1186,20 +1231,37 @@ function OpportunityValueCell({ intro, onSave }) {
 // (PUT /introductions/:id/commit-status and admin's override) rejects a
 // write past this point too, this just keeps the control from even
 // offering it client-side.
+// 9 Oct 2026 batch, item 11 — selecting an option used to save immediately
+// on change, so a stray click could silently "freeze in" the wrong
+// status. Now the dropdown just holds a pending local selection; nothing
+// is written until the startup clicks Save, and the Save button only
+// appears once the selection actually differs from what's saved.
 function CommitStatusCell({ intro, onSave, busy }) {
+  const saved = intro.startup_commit_status || "";
+  const [pending, setPending] = useState(saved);
+  useEffect(() => { setPending(saved); }, [saved]);
+
   if (["Closed - Won", "Closed - Lost", "Stalled"].includes(intro.engagement_stage)) {
     return <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F" }}>N/A</span>;
   }
+  const dirty = pending !== saved && pending !== "";
   return (
-    <select
-      style={{ ...inputStyle, minWidth: 170 }}
-      value={intro.startup_commit_status || ""}
-      disabled={busy}
-      onChange={(e) => e.target.value && onSave(e.target.value)}
-    >
-      <option value="">— Select —</option>
-      {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-    </select>
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <select
+        style={{ ...inputStyle, minWidth: 170 }}
+        value={pending}
+        disabled={busy}
+        onChange={(e) => setPending(e.target.value)}
+      >
+        <option value="">— Select —</option>
+        {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+      {dirty && (
+        <PrimaryButton icon={CheckCircle2} disabled={busy} onClick={() => onSave(pending)} style={{ padding: "6px 10px", fontSize: 12 }}>
+          Save
+        </PrimaryButton>
+      )}
+    </div>
   );
 }
 
@@ -1484,12 +1546,11 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
                 in portal.js), but check generically in case that changes. */}
             {i.duplicate_of_introduction_id && (
               <div style={{ fontFamily: FONT, fontSize: 11, color: "#8A6D00", marginTop: 4 }}>
-                Possible duplicate — already in the pipeline since {dateStr(i.duplicate_of_request_date)}, currently {interestStatusFor(i.duplicate_of_approval_status)}.
+                Possible duplicate — already in the pipeline since {dateStr(i.duplicate_of_request_date)}.
               </div>
             )}
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
             <StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
           </div>
         </Card>
@@ -1682,7 +1743,7 @@ function PartnerDashboardView({ refreshKey }) {
         </Card>
       </div>
       <IntroTable
-        columns={["Retailer", "Startup", "Initiated by", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee", ""]}
+        columns={["Retailer", "Startup", "Initiated by", "Actual Introduction status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee", ""]}
         rows={intros}
         emptyIcon={Handshake}
         emptyTitle="No introductions yet"
@@ -1692,10 +1753,9 @@ function PartnerDashboardView({ refreshKey }) {
             <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
             <td style={cellStyle}>{i.startup_name}</td>
             <td style={cellStyle}>{initiatorLabel(i.initiated_by)}</td>
-            <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
             <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}>{i.engagement_stage ? <StatusBadge status={i.engagement_stage} colors={DEAL_STATUS_COLORS} /> : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
-            <td style={cellStyle}>{money(i.opportunity_value)}</td>
+            <td style={cellStyle}>{opportunityMoney(i.opportunity_value)}</td>
             <td style={cellStyle}>{expectedFee(i) != null ? usdFee(expectedFee(i)) : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
             <td style={cellStyle}><GhostButton onClick={() => setDetailIntro(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
           </tr>
@@ -1797,31 +1857,109 @@ function AdminOverview({ onNavigate }) {
   );
 }
 
+// 9 Oct 2026 batch, item 2 — full admin edit for a GTM partner: every
+// field the backend's PUT /admin/partners/:id already accepts (see
+// admin.js), including the commission/rate override fields RIV needs as
+// final decision-maker. Email is intentionally excluded — the backend
+// route doesn't update it (it's tied to the provisioned login), so it's
+// shown read-only here rather than offered as an editable field that
+// would silently do nothing.
+function EditPartnerModal({ partner, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    fullName: partner.full_name || "", company: partner.company || "", phone: partner.phone || "",
+    linkedinUrl: partner.linkedin_url || "", region: partner.region || "",
+    onboardingStage: partner.onboarding_stage || "New", agreementLink: partner.agreement_link || "",
+    agreementSignedDate: partner.agreement_signed_date ? partner.agreement_signed_date.slice(0, 10) : "",
+    defaultPayoutSplit: partner.default_payout_split ?? "", revenueShareOverride: partner.revenue_share_override ?? "",
+    riv_owner: partner.riv_owner || "", status: partner.status || "Active", notes: partner.notes || "",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updatePartner(partner.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${partner.full_name}`} onClose={onClose} width={520}>
+      <ErrorBanner text={error} />
+      <Field label="Email" hint="Login email — change by re-provisioning.">
+        <input style={{ ...inputStyle, color: "#9B958F" }} value={partner.email} disabled />
+      </Field>
+      <Field label="Full name"><input style={inputStyle} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
+      <Field label="Company"><input style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} /></Field>
+      <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="LinkedIn URL"><input style={inputStyle} value={form.linkedinUrl} onChange={(e) => setForm({ ...form, linkedinUrl: e.target.value })} /></Field>
+      <Field label="Region"><input style={inputStyle} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></Field>
+      <Field label="Onboarding stage">
+        <select style={inputStyle} value={form.onboardingStage} onChange={(e) => setForm({ ...form, onboardingStage: e.target.value })}>
+          <option>New</option><option>Agreement Sent</option><option>Signed</option><option>Onboarded</option>
+        </select>
+      </Field>
+      <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
+      <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
+      <Field label="Default payout split (%)"><input style={inputStyle} type="number" step="0.1" value={form.defaultPayoutSplit} onChange={(e) => setForm({ ...form, defaultPayoutSplit: e.target.value })} /></Field>
+      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
+        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
+      </Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active</option><option>Inactive</option>
+        </select>
+      </Field>
+      <Field label="Notes"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.fullName} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
+  );
+}
+
 function AdminPartnersView() {
   const [partners, setPartners] = useState(null);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ fullName: "", company: "", email: "", phone: "", region: "" });
   const [provisioning, setProvisioning] = useState(null);
   const [pwField, setPwField] = useState("");
+  // item 13 — guards against a double-click/double-submit on Provision
+  // firing two overlapping POSTs before the first one's response (and the
+  // resulting portal_login_status flip) comes back and hides the button.
+  const [provisionBusy, setProvisionBusy] = useState(false);
+  const [editingPartner, setEditingPartner] = useState(null);
 
   const load = useCallback(() => api.listPartners().then((r) => setPartners(r.partners)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
   async function createPartner() {
     setError("");
-    try { await api.createPartner(form); setShowNew(false); setForm({ fullName: "", company: "", email: "", phone: "", region: "" }); load(); }
+    try {
+      await api.createPartner(form);
+      setShowNew(false);
+      setForm({ fullName: "", company: "", email: "", phone: "", region: "" });
+      load();
+      showSuccess(`${form.fullName} was added as a new GTM partner.`);
+    }
     catch (e) { setError(e.message); }
   }
   async function provision(p) {
-    setError("");
-    try { await api.provisionPartnerLogin(p.id, pwField); setProvisioning(null); setPwField(""); load(); }
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionPartnerLogin(p.id, pwField); setProvisioning(null); setPwField(""); await load(); }
     catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
   }
 
   if (error) return <ErrorBanner text={error} />;
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New partner</PrimaryButton>
       </div>
@@ -1841,14 +1979,17 @@ function AdminPartnersView() {
               <span>{money(p.fees_earned)} fees earned</span>
             </div>
           </div>
-          {p.portal_login_status !== "Provisioned" && (
-            provisioning === p.id ? (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8}>Provision</PrimaryButton>
-              </div>
-            ) : <GhostButton onClick={() => setProvisioning(p.id)}>Provision login</GhostButton>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <GhostButton onClick={() => setEditingPartner(p)}>Edit</GhostButton>
+            {p.portal_login_status !== "Provisioned" && (
+              provisioning === p.id ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
+                  <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
+                </div>
+              ) : <GhostButton onClick={() => setProvisioning(p.id)}>Provision login</GhostButton>
+            )}
+          </div>
         </Card>
       ))}
       {showNew && (
@@ -1862,13 +2003,126 @@ function AdminPartnersView() {
           <PrimaryButton onClick={createPartner} disabled={!form.fullName || !form.email} style={{ width: "100%" }}>Create partner</PrimaryButton>
         </Modal>
       )}
+      {editingPartner && (
+        <EditPartnerModal partner={editingPartner} onClose={() => setEditingPartner(null)} onSaved={load} />
+      )}
     </div>
+  );
+}
+
+// 9 Oct 2026 batch, item 2 — full admin edit for a RISE startup, covering
+// every field the backend's PUT /admin/startups/:id accepts (admin.js),
+// including the commission (revenue share) override and the fee/equity
+// onboarding fields — RIV admin is the final decision-maker on all of
+// these, not just the basics shown on the card. Email is read-only here
+// for the same reason as EditPartnerModal.
+function EditStartupModal({ startup, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    startupName: startup.startup_name || "", founderName: startup.founder_name || "", phone: startup.phone || "",
+    sector: startup.sector || "", solutionSummary: startup.solution_summary || "",
+    onboardingStage: startup.onboarding_stage || "New", agreementLink: startup.agreement_link || "",
+    agreementSignedDate: startup.agreement_signed_date ? startup.agreement_signed_date.slice(0, 10) : "",
+    participationFeeStatus: startup.participation_fee_status || "Pending",
+    participationFeeDueDate: startup.participation_fee_due_date ? startup.participation_fee_due_date.slice(0, 10) : "",
+    equityPct: startup.equity_pct ?? "", revenueShareOverride: startup.revenue_share_override ?? "",
+    riv_owner: startup.riv_owner || "", status: startup.status || "Active", notes: startup.notes || "",
+    legalEntity: startup.legal_entity || "", website: startup.website || "", city: startup.city || "",
+    hqCountry: startup.hq_country || "", yearIncorporated: startup.year_incorporated || "",
+    foundingTeamDetails: startup.founding_team_details || "",
+    problemDescription: startup.problem_description || "", solutionDescription: startup.solution_description || "",
+    topBenefits: startup.top_benefits || "", techStack: startup.tech_stack || "", subVertical: startup.sub_vertical || "",
+    competition: startup.competition || "", competitiveAdvantage: startup.competitive_advantage || "",
+    payingCustomerCount: startup.paying_customer_count || "", notableCustomers: startup.notable_customers || "",
+    keyMilestones: startup.key_milestones || "", pastFundRaised: startup.past_fund_raised || "",
+    currentlyRaisingCapital: startup.currently_raising_capital || "", fundraisingSupportInterest: startup.fundraising_support_interest || "",
+    additionalNotes: startup.additional_notes || "",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updateStartup(startup.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride, equityPct: form.equityPct === "" ? null : form.equityPct });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${startup.startup_name}`} onClose={onClose} width={560}>
+      <ErrorBanner text={error} />
+      <Field label="Email" hint="Login email — change by re-provisioning."><input style={{ ...inputStyle, color: "#9B958F" }} value={startup.email} disabled /></Field>
+      <Field label="Startup name"><input style={inputStyle} value={form.startupName} onChange={(e) => setForm({ ...form, startupName: e.target.value })} /></Field>
+      <Field label="Founder name"><input style={inputStyle} value={form.founderName} onChange={(e) => setForm({ ...form, founderName: e.target.value })} /></Field>
+      <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="Sector"><input style={inputStyle} value={form.sector} onChange={(e) => setForm({ ...form, sector: e.target.value })} /></Field>
+      <Field label="Solution summary"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.solutionSummary} onChange={(e) => setForm({ ...form, solutionSummary: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>Onboarding &amp; commercial terms</div>
+      <Field label="Onboarding stage">
+        <select style={inputStyle} value={form.onboardingStage} onChange={(e) => setForm({ ...form, onboardingStage: e.target.value })}>
+          <option>New</option><option>Agreement Sent</option><option>Signed</option><option>Onboarded</option>
+        </select>
+      </Field>
+      <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
+      <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
+      <Field label="Participation fee status">
+        <select style={inputStyle} value={form.participationFeeStatus} onChange={(e) => setForm({ ...form, participationFeeStatus: e.target.value })}>
+          <option>Pending</option><option>Paid</option>
+        </select>
+      </Field>
+      <Field label="Participation fee due date"><input style={inputStyle} type="date" value={form.participationFeeDueDate} onChange={(e) => setForm({ ...form, participationFeeDueDate: e.target.value })} /></Field>
+      <Field label="Equity (%)"><input style={inputStyle} type="number" step="0.01" value={form.equityPct} onChange={(e) => setForm({ ...form, equityPct: e.target.value })} /></Field>
+      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
+        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
+      </Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active</option><option>Inactive</option>
+        </select>
+      </Field>
+      <Field label="Internal notes"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>RISE GTM Application Form fields</div>
+      <Field label="Legal entity"><input style={inputStyle} value={form.legalEntity} onChange={(e) => setForm({ ...form, legalEntity: e.target.value })} /></Field>
+      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="City"><input style={inputStyle} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Field>
+      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Year incorporated"><input style={inputStyle} value={form.yearIncorporated} onChange={(e) => setForm({ ...form, yearIncorporated: e.target.value })} /></Field>
+      <Field label="Founding team details / qualifications"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.foundingTeamDetails} onChange={(e) => setForm({ ...form, foundingTeamDetails: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>Startup Detail View fields</div>
+      <Field label="Problem description"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.problemDescription} onChange={(e) => setForm({ ...form, problemDescription: e.target.value })} /></Field>
+      <Field label="Solution"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.solutionDescription} onChange={(e) => setForm({ ...form, solutionDescription: e.target.value })} /></Field>
+      <Field label="Top 3 benefits"><input style={inputStyle} value={form.topBenefits} onChange={(e) => setForm({ ...form, topBenefits: e.target.value })} /></Field>
+      <Field label="Tech stack"><input style={inputStyle} value={form.techStack} onChange={(e) => setForm({ ...form, techStack: e.target.value })} /></Field>
+      <Field label="Sub-vertical"><input style={inputStyle} value={form.subVertical} onChange={(e) => setForm({ ...form, subVertical: e.target.value })} /></Field>
+      <Field label="Competition"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.competition} onChange={(e) => setForm({ ...form, competition: e.target.value })} /></Field>
+      <Field label="Competitive advantage"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.competitiveAdvantage} onChange={(e) => setForm({ ...form, competitiveAdvantage: e.target.value })} /></Field>
+      <Field label="Paying customer count"><input style={inputStyle} value={form.payingCustomerCount} onChange={(e) => setForm({ ...form, payingCustomerCount: e.target.value })} /></Field>
+      <Field label="Notable customers"><input style={inputStyle} value={form.notableCustomers} onChange={(e) => setForm({ ...form, notableCustomers: e.target.value })} /></Field>
+      <Field label="Key milestones"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.keyMilestones} onChange={(e) => setForm({ ...form, keyMilestones: e.target.value })} /></Field>
+      <Field label="Past fund raised"><input style={inputStyle} value={form.pastFundRaised} onChange={(e) => setForm({ ...form, pastFundRaised: e.target.value })} /></Field>
+      <Field label="Currently raising capital?">
+        <select style={inputStyle} value={form.currentlyRaisingCapital} onChange={(e) => setForm({ ...form, currentlyRaisingCapital: e.target.value })}>
+          <option value="">— None —</option><option>Yes</option><option>No</option>
+        </select>
+      </Field>
+      <Field label="Interested in fundraising support from RIV?">
+        <select style={inputStyle} value={form.fundraisingSupportInterest} onChange={(e) => setForm({ ...form, fundraisingSupportInterest: e.target.value })}>
+          <option value="">— None —</option><option>Yes</option><option>No</option>
+        </select>
+      </Field>
+      <Field label="Anything else"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.additionalNotes} onChange={(e) => setForm({ ...form, additionalNotes: e.target.value })} /></Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.startupName} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
   );
 }
 
 function AdminStartupsView() {
   const [startups, setStartups] = useState(null);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const blankForm = {
     startupName: "", founderName: "", email: "", sector: "", solutionSummary: "",
@@ -1880,25 +2134,36 @@ function AdminStartupsView() {
   const [form, setForm] = useState(blankForm);
   const [provisioning, setProvisioning] = useState(null);
   const [pwField, setPwField] = useState("");
+  const [provisionBusy, setProvisionBusy] = useState(false); // item 13
   const [detailStartupId, setDetailStartupId] = useState(null);
+  const [editingStartup, setEditingStartup] = useState(null);
 
   const load = useCallback(() => api.listStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
   async function createStartup() {
     setError("");
-    try { await api.createStartup(form); setShowNew(false); setForm(blankForm); load(); }
+    try {
+      await api.createStartup(form);
+      setShowNew(false);
+      setForm(blankForm);
+      load();
+      showSuccess(`${form.startupName} was added as a new RISE startup.`);
+    }
     catch (e) { setError(e.message); }
   }
   async function provision(s) {
-    setError("");
-    try { await api.provisionStartupLogin(s.id, pwField); setProvisioning(null); setPwField(""); load(); }
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionStartupLogin(s.id, pwField); setProvisioning(null); setPwField(""); await load(); }
     catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
   }
 
   if (error) return <ErrorBanner text={error} />;
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New startup</PrimaryButton>
       </div>
@@ -1915,16 +2180,17 @@ function AdminStartupsView() {
             <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#7A756F", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
               <span>{s.active_introduction_count ?? 0} active introduction{s.active_introduction_count === 1 ? "" : "s"}</span>
               <span>{s.closed_won_count ?? 0} closed – won</span>
-              <span>{money(s.total_opportunity_value)} total opportunity value</span>
+              <span>{opportunityMoney(s.total_opportunity_value)} total opportunity value</span>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <GhostButton onClick={() => setDetailStartupId(s.id)}>View Details</GhostButton>
+            <GhostButton onClick={() => setEditingStartup(s)}>Edit</GhostButton>
             {s.portal_login_status !== "Provisioned" && (
               provisioning === s.id ? (
                 <div style={{ display: "flex", gap: 8 }}>
                   <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8}>Provision</PrimaryButton>
+                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
                 </div>
               ) : <GhostButton onClick={() => setProvisioning(s.id)}>Provision login</GhostButton>
             )}
@@ -1973,6 +2239,7 @@ function AdminStartupsView() {
         </Modal>
       )}
       {detailStartupId && <StartupDetailModal startupId={detailStartupId} onClose={() => setDetailStartupId(null)} />}
+      {editingStartup && <EditStartupModal startup={editingStartup} onClose={() => setEditingStartup(null)} onSaved={load} />}
     </div>
   );
 }
@@ -2004,13 +2271,82 @@ const ADMIN_RETAILER_TABS = [
   { id: "RIV Direct", label: "RIV Direct" },
   { id: "All", label: "All" },
 ];
+// 9 Oct 2026 batch, item 2 — full admin edit for a retailer, every field
+// PUT /admin/retailers/:id accepts, including network source / GTM partner
+// and status, so RIV admin can correct anything as final decision-maker.
+function EditRetailerModal({ retailer, partners, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: retailer.name || "", brand: retailer.brand || "", website: retailer.website || "",
+    hqCountry: retailer.hq_country || "", category: retailer.category || "", location: retailer.location || "",
+    networkSource: retailer.network_source || "RIV Direct", owningPartnerId: retailer.owning_partner_id || "",
+    contactName: retailer.contact_name || "", contactDesignation: retailer.contact_designation || "",
+    contactEmail: retailer.contact_email || "", contactPhone: retailer.contact_phone || "",
+    riv_owner: retailer.riv_owner || "", status: retailer.status || "Active in network",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updateRetailer(retailer.id, { ...form, owningPartnerId: form.owningPartnerId || null });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${retailer.brand || retailer.name}`} onClose={onClose} width={520}>
+      <ErrorBanner text={error} />
+      <Field label="Name" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+      <Field label="Brand"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
+      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="Category"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+      <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Network source">
+        <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
+          <option>RIV Direct</option><option>GTM Partner</option>
+        </select>
+      </Field>
+      {/* item 8 — relabeled "GTM partner" (was "Owning partner"), required
+          whenever a retailer sits in a GTM partner's network. */}
+      {form.networkSource === "GTM Partner" && (
+        <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
+          <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
+            <option value="">Select…</option>
+            {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Contact name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
+      <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
+      <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
+      <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active in network</option><option>Prospect</option><option>In Process</option><option>Duplicate</option><option>Rejected</option>
+        </select>
+      </Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.name || gtmPartnerMissing} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
+  );
+}
+
 function AdminRetailersView() {
   const [retailers, setRetailers] = useState(null);
   const [partners, setPartners] = useState([]);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const [tab, setTab] = useState("All");
   const [form, setForm] = useState({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
+  const [editingRetailer, setEditingRetailer] = useState(null);
+  // item 8 — GTM partner is mandatory once Network source is "GTM Partner".
+  const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
 
   const load = useCallback(() => api.listRetailersAdmin().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); api.listPartners().then((r) => setPartners(r.partners)).catch(() => {}); }, [load]);
@@ -2022,6 +2358,7 @@ function AdminRetailersView() {
       setShowNew(false);
       setForm({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
       load();
+      showSuccess(`${form.brand || form.name} was added as a new retailer.`);
     } catch (e) { setError(e.message); }
   }
   async function approve(id) {
@@ -2044,6 +2381,7 @@ function AdminRetailersView() {
   const visibleRetailers = (retailers || []).filter((r) => tab === "All" || r.network_source === tab);
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", gap: 4 }}>
           {ADMIN_RETAILER_TABS.map((t) => (
@@ -2074,6 +2412,7 @@ function AdminRetailersView() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
               <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabelForAdmin(r.status)} />
+              <GhostButton onClick={() => setEditingRetailer(r)}>Edit</GhostButton>
               {["Prospect", "Duplicate"].includes(r.status) && <GhostButton onClick={() => markInProcess(r.id)}>Mark In Process</GhostButton>}
               {r.status !== "Active in network" && r.status !== "Rejected" && <PrimaryButton onClick={() => approve(r.id)}>Approve</PrimaryButton>}
             </div>
@@ -2098,12 +2437,15 @@ function AdminRetailersView() {
           <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
           <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
           <Field label="Network source">
-            <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value })}>
+            <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
               <option>RIV Direct</option><option>GTM Partner</option>
             </select>
           </Field>
+          {/* item 8 (9 Oct 2026 batch) — relabeled "GTM partner" (was
+              "Owning partner") and made required whenever a retailer is
+              being added to a GTM partner's network, not just optional. */}
           {form.networkSource === "GTM Partner" && (
-            <Field label="Owning partner">
+            <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
               <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
                 <option value="">Select…</option>
                 {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
@@ -2114,8 +2456,11 @@ function AdminRetailersView() {
           <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
           <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
           <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-          <PrimaryButton onClick={createRetailer} disabled={!form.name} style={{ width: "100%" }}>Create retailer</PrimaryButton>
+          <PrimaryButton onClick={createRetailer} disabled={!form.name || gtmPartnerMissing} style={{ width: "100%" }}>Create retailer</PrimaryButton>
         </Modal>
+      )}
+      {editingRetailer && (
+        <EditRetailerModal retailer={editingRetailer} partners={partners} onClose={() => setEditingRetailer(null)} onSaved={load} />
       )}
     </div>
   );
@@ -2150,8 +2495,22 @@ function AdminIntroductionsView() {
   // "New Opportunity" (24 Sep 2026 addendum, Scenario C) — RIV proposing an
   // opportunity directly to a startup, for RIV-Direct retailers only.
   const [showNewOpportunity, setShowNewOpportunity] = useState(false);
-  const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter]);
+  // item 12 (9 Oct 2026 batch) — "Active" (default) vs "Archived" toggle,
+  // same two-state pattern as AdminRetailersView's own status filter.
+  const [showArchived, setShowArchived] = useState(false);
+  const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined, showArchived).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter, showArchived]);
   useEffect(() => { load(); }, [load]);
+
+  async function archive(id) {
+    setError("");
+    try { await api.archiveIntroductionAdmin(id); load(); }
+    catch (e) { setError(e.message); }
+  }
+  async function unarchive(id) {
+    setError("");
+    try { await api.unarchiveIntroductionAdmin(id); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   async function setStatus(id, status) {
     setError("");
@@ -2224,11 +2583,19 @@ function AdminIntroductionsView() {
             <option value="">All statuses</option>
             {Object.keys(STATUS_COLORS).map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
+          <GhostButton onClick={() => setShowArchived((v) => !v)}>
+            {showArchived ? "View Active" : "View Archived"}
+          </GhostButton>
           <PrimaryButton icon={Plus} onClick={() => setShowNewOpportunity(true)}>New Opportunity</PrimaryButton>
         </div>
       </div>
+      {showArchived && (
+        <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 10 }}>
+          Showing archived introductions. Archiving doesn't delete anything — unarchive to bring a record back into the active list.
+        </div>
+      )}
       {!intros ? <Spinner /> : !visibleIntros.length ? (
-        <EmptyState icon={Handshake} title="No introductions" text="Nothing matches this filter yet." />
+        <EmptyState icon={Handshake} title={showArchived ? "Nothing archived" : "No introductions"} text={showArchived ? "Introductions you archive will show up here." : "Nothing matches this filter yet."} />
       ) : visibleIntros.map((i) => (
         <Card key={i.id} style={{ padding: 16, marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
@@ -2245,7 +2612,7 @@ function AdminIntroductionsView() {
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
             <span style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE" }}>Detail:</span>
-            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
+            <StatusBadge status={approvalStatusForStartup(i.approval_status)} colors={APPROVAL_COLORS} />
             <StatusBadge status={i.status} />
           </div>
           {/* item 13b — amber duplicate banner, mirroring
@@ -2257,6 +2624,9 @@ function AdminIntroductionsView() {
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <GhostButton onClick={() => setOpenIntroDetails(i)}>View Details</GhostButton>
+            {i.archived_at
+              ? <GhostButton onClick={() => unarchive(i.id)}>Unarchive</GhostButton>
+              : <GhostButton onClick={() => archive(i.id)}>Archive</GhostButton>}
           </div>
           {i.approval_status === "Pending RIV Approval" && (
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -2491,6 +2861,7 @@ export default function RiseGtmApp() {
   const [showAddRetailer, setShowAddRetailer] = useState(false);
   const [detailStartupId, setDetailStartupId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  useDisableNumberInputScroll();
 
   useEffect(() => {
     if (user && !view) {
@@ -2566,6 +2937,28 @@ function GlobalStyle() {
       input:focus, select:focus, textarea:focus { outline: 2px solid ${BRAND.coral}; outline-offset: 0; }
       .gtm-portal-spin { animation: gtm-portal-spin 0.9s linear infinite; }
       @keyframes gtm-portal-spin { to { transform: rotate(360deg); } }
+      /* 9 Oct 2026 batch, items 2 & 7 — remove the native up/down spinner
+         arrows from every number input in the app (commission/rate fields,
+         Opportunity Value, Deal Value, etc.) */
+      input[type=number]::-webkit-outer-spin-button,
+      input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     `}</style>
   );
+}
+// 9 Oct 2026 batch, item 2 — a number input's value silently changes when
+// the page is scrolled while that input happens to be focused (the
+// browser's default scroll-to-change-value behavior on type="number").
+// Blurring the focused number input on any wheel event neutralizes that
+// without touching individual inputs one by one. Mounted once, for the
+// lifetime of the authenticated app shell.
+function useDisableNumberInputScroll() {
+  useEffect(() => {
+    function handleWheel() {
+      const el = document.activeElement;
+      if (el && el.tagName === "INPUT" && el.type === "number") el.blur();
+    }
+    document.addEventListener("wheel", handleWheel, { passive: true });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, []);
 }
