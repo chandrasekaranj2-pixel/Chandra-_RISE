@@ -1231,20 +1231,37 @@ function OpportunityValueCell({ intro, onSave }) {
 // (PUT /introductions/:id/commit-status and admin's override) rejects a
 // write past this point too, this just keeps the control from even
 // offering it client-side.
+// 9 Oct 2026 batch, item 11 — selecting an option used to save immediately
+// on change, so a stray click could silently "freeze in" the wrong
+// status. Now the dropdown just holds a pending local selection; nothing
+// is written until the startup clicks Save, and the Save button only
+// appears once the selection actually differs from what's saved.
 function CommitStatusCell({ intro, onSave, busy }) {
+  const saved = intro.startup_commit_status || "";
+  const [pending, setPending] = useState(saved);
+  useEffect(() => { setPending(saved); }, [saved]);
+
   if (["Closed - Won", "Closed - Lost", "Stalled"].includes(intro.engagement_stage)) {
     return <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F" }}>N/A</span>;
   }
+  const dirty = pending !== saved && pending !== "";
   return (
-    <select
-      style={{ ...inputStyle, minWidth: 170 }}
-      value={intro.startup_commit_status || ""}
-      disabled={busy}
-      onChange={(e) => e.target.value && onSave(e.target.value)}
-    >
-      <option value="">— Select —</option>
-      {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-    </select>
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <select
+        style={{ ...inputStyle, minWidth: 170 }}
+        value={pending}
+        disabled={busy}
+        onChange={(e) => setPending(e.target.value)}
+      >
+        <option value="">— Select —</option>
+        {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+      {dirty && (
+        <PrimaryButton icon={CheckCircle2} disabled={busy} onClick={() => onSave(pending)} style={{ padding: "6px 10px", fontSize: 12 }}>
+          Save
+        </PrimaryButton>
+      )}
+    </div>
   );
 }
 
