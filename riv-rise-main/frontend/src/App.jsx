@@ -2495,8 +2495,22 @@ function AdminIntroductionsView() {
   // "New Opportunity" (24 Sep 2026 addendum, Scenario C) — RIV proposing an
   // opportunity directly to a startup, for RIV-Direct retailers only.
   const [showNewOpportunity, setShowNewOpportunity] = useState(false);
-  const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter]);
+  // item 12 (9 Oct 2026 batch) — "Active" (default) vs "Archived" toggle,
+  // same two-state pattern as AdminRetailersView's own status filter.
+  const [showArchived, setShowArchived] = useState(false);
+  const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined, showArchived).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter, showArchived]);
   useEffect(() => { load(); }, [load]);
+
+  async function archive(id) {
+    setError("");
+    try { await api.archiveIntroductionAdmin(id); load(); }
+    catch (e) { setError(e.message); }
+  }
+  async function unarchive(id) {
+    setError("");
+    try { await api.unarchiveIntroductionAdmin(id); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   async function setStatus(id, status) {
     setError("");
@@ -2569,11 +2583,19 @@ function AdminIntroductionsView() {
             <option value="">All statuses</option>
             {Object.keys(STATUS_COLORS).map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
+          <GhostButton onClick={() => setShowArchived((v) => !v)}>
+            {showArchived ? "View Active" : "View Archived"}
+          </GhostButton>
           <PrimaryButton icon={Plus} onClick={() => setShowNewOpportunity(true)}>New Opportunity</PrimaryButton>
         </div>
       </div>
+      {showArchived && (
+        <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 10 }}>
+          Showing archived introductions. Archiving doesn't delete anything — unarchive to bring a record back into the active list.
+        </div>
+      )}
       {!intros ? <Spinner /> : !visibleIntros.length ? (
-        <EmptyState icon={Handshake} title="No introductions" text="Nothing matches this filter yet." />
+        <EmptyState icon={Handshake} title={showArchived ? "Nothing archived" : "No introductions"} text={showArchived ? "Introductions you archive will show up here." : "Nothing matches this filter yet."} />
       ) : visibleIntros.map((i) => (
         <Card key={i.id} style={{ padding: 16, marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
@@ -2602,6 +2624,9 @@ function AdminIntroductionsView() {
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <GhostButton onClick={() => setOpenIntroDetails(i)}>View Details</GhostButton>
+            {i.archived_at
+              ? <GhostButton onClick={() => unarchive(i.id)}>Unarchive</GhostButton>
+              : <GhostButton onClick={() => archive(i.id)}>Archive</GhostButton>}
           </div>
           {i.approval_status === "Pending RIV Approval" && (
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
