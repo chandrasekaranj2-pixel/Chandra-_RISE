@@ -218,12 +218,21 @@ function publicIntro(intro) {
 
 // A "live" pairing (25 Sep 2026 batch, items 2 & 13) — not Rejected, and
 // not sitting at a closed/dead deal stage. Shared SQL fragment so the
-// partner-form block (item 2) and the startup-side duplicate flag (item
-// 13) use the exact same definition of "still in the pipeline".
+// partner-form block (item 2), the startup-side duplicate flag (item 13),
+// and admin's own New Opportunity check (9 Oct 2026 batch, item 10) use
+// the exact same definition of "still in the pipeline".
+//
+// Qualified with the "i." alias (9 Oct 2026 fix) — every call site joins
+// this against startups/retailers (both of which also have a `status`
+// column) or self-joins introductions again as `dup`, and an unqualified
+// `status`/`approval_status`/`engagement_stage` is ambiguous the moment
+// more than one of those tables is in scope. Every call site aliases the
+// introductions row it means as `i`, so qualifying here is safe everywhere
+// this is used.
 const LIVE_PAIRING_SQL = `
-  approval_status != 'Rejected'
-  AND (status IS NULL OR status NOT IN ('Closed - Lost', 'Stalled'))
-  AND (engagement_stage IS NULL OR engagement_stage NOT IN ('Closed - Lost', 'Stalled'))
+  i.approval_status != 'Rejected'
+  AND (i.status IS NULL OR i.status NOT IN ('Closed - Lost', 'Stalled'))
+  AND (i.engagement_stage IS NULL OR i.engagement_stage NOT IN ('Closed - Lost', 'Stalled'))
 `;
 
 // Mirrors App.jsx's interestStatusFor() — used only to compose the
@@ -358,7 +367,7 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
     // form (item 2), the startup's own Request Intro stays unblocked: a
     // duplicate is still created, just flagged for admin's attention.
     const { rows: dupRows } = await pool.query(
-      `SELECT id FROM introductions WHERE startup_id = $1 AND retailer_id = $2 AND ${LIVE_PAIRING_SQL} ORDER BY created_at ASC LIMIT 1`,
+      `SELECT id FROM introductions i WHERE i.startup_id = $1 AND i.retailer_id = $2 AND ${LIVE_PAIRING_SQL} ORDER BY i.created_at ASC LIMIT 1`,
       [startupId, retailerId]
     );
     const duplicateOfIntroductionId = dupRows[0]?.id || null;
@@ -842,6 +851,13 @@ async function computePartnerFee(intro, feeAmountDue) {
 // otherwise discard) so admin.js's manual Closed-Won override can reuse
 // the exact same calculation.
 router.computePartnerFee = computePartnerFee;
+// 9 Oct 2026 batch, item 10 — admin's own "New Opportunity" creation route
+// (admin.js) had no duplicate-pairing check at all, unlike the GTM
+// partner's form (createPartnerInitiatedIntroduction above). Exposed here,
+// same reasoning as computePartnerFee just above, so admin.js can run the
+// exact same LIVE_PAIRING_SQL check instead of duplicating it.
+router.LIVE_PAIRING_SQL = LIVE_PAIRING_SQL;
+router.interestStatusForServer = interestStatusForServer;
 
 // Small notification-log helpers.
 async function notify(poolRef, type, introId, recipientRole, recipientProfileId) {

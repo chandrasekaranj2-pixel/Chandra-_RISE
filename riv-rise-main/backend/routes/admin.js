@@ -495,6 +495,26 @@ router.post("/introductions", async (req, res, next) => {
       return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Opportunity." });
     }
 
+    // 9 Oct 2026 batch, item 10 — this route had no duplicate-pairing check
+    // at all (the GTM partner's own "Check Introduction Interest" form
+    // already blocks duplicates server-side; this admin path was the
+    // gap), so the same startup-retailer pair could be submitted as a new
+    // opportunity over and over. Mirrors createPartnerInitiatedIntroduction
+    // in portal.js, reusing its LIVE_PAIRING_SQL fragment.
+    const { rows: dupRows } = await pool.query(
+      `SELECT i.*, s.startup_name, r.name AS retailer_name FROM introductions i
+       JOIN startups s ON s.id = i.startup_id JOIN retailers r ON r.id = i.retailer_id
+       WHERE i.startup_id = $1 AND i.retailer_id = $2 AND ${portalRoutes.LIVE_PAIRING_SQL} ORDER BY i.created_at ASC LIMIT 1`,
+      [startupId, retailerId]
+    );
+    if (dupRows[0]) {
+      const dup = dupRows[0];
+      const initiatorLabel = dup.initiated_by === "RIV Admin" ? "RIV" : dup.initiated_by;
+      return res.status(409).json({
+        error: `${dup.startup_name} has already been introduced to ${dup.retailer_name} — this pairing is already in the pipeline (Initiated by ${initiatorLabel}). Check the existing introductions list instead of submitting a duplicate.`,
+      });
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO introductions (initiated_by, startup_id, retailer_id, network_source, status, approval_status, gtm_context_note)
        VALUES ('RIV Admin', $1, $2, $3, 'Approved', 'Startup Confirmed', $4) RETURNING *`,
