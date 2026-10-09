@@ -215,6 +215,29 @@ function ErrorBanner({ text }) {
     </div>
   );
 }
+// 9 Oct 2026 batch, item 1 — acknowledgement banner for a successful
+// create action (new GTM partner, new retailer, etc.), same shape as
+// ErrorBanner but green. Callers clear it themselves (e.g. on the next
+// edit or after a short timeout) — see useSuccessMessage() below.
+function SuccessBanner({ text }) {
+  if (!text) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderRadius: 12, background: "#E6F4EA", border: "1px solid #BFE3C9", marginBottom: 16 }}>
+      <CheckCircle2 size={15} color="#1E7A34" />
+      <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{text}</div>
+    </div>
+  );
+}
+// Small helper: holds a success message and auto-clears it after a few
+// seconds, so callers don't have to manage their own timers.
+function useSuccessMessage() {
+  const [message, setMessage] = useState("");
+  function show(text) {
+    setMessage(text);
+    setTimeout(() => setMessage((m) => (m === text ? "" : m)), 4000);
+  }
+  return [message, show];
+}
 function Spinner({ label }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", padding: "60px 20px", fontFamily: FONT, fontSize: 13, color: "#9B958F" }}>
@@ -2491,6 +2514,7 @@ export default function RiseGtmApp() {
   const [showAddRetailer, setShowAddRetailer] = useState(false);
   const [detailStartupId, setDetailStartupId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  useDisableNumberInputScroll();
 
   useEffect(() => {
     if (user && !view) {
@@ -2566,6 +2590,28 @@ function GlobalStyle() {
       input:focus, select:focus, textarea:focus { outline: 2px solid ${BRAND.coral}; outline-offset: 0; }
       .gtm-portal-spin { animation: gtm-portal-spin 0.9s linear infinite; }
       @keyframes gtm-portal-spin { to { transform: rotate(360deg); } }
+      /* 9 Oct 2026 batch, items 2 & 7 — remove the native up/down spinner
+         arrows from every number input in the app (commission/rate fields,
+         Opportunity Value, Deal Value, etc.) */
+      input[type=number]::-webkit-outer-spin-button,
+      input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     `}</style>
   );
+}
+// 9 Oct 2026 batch, item 2 — a number input's value silently changes when
+// the page is scrolled while that input happens to be focused (the
+// browser's default scroll-to-change-value behavior on type="number").
+// Blurring the focused number input on any wheel event neutralizes that
+// without touching individual inputs one by one. Mounted once, for the
+// lifetime of the authenticated app shell.
+function useDisableNumberInputScroll() {
+  useEffect(() => {
+    function handleWheel() {
+      const el = document.activeElement;
+      if (el && el.tagName === "INPUT" && el.type === "number") el.blur();
+    }
+    document.addEventListener("wheel", handleWheel, { passive: true });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, []);
 }
