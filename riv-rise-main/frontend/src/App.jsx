@@ -49,9 +49,12 @@ const APPROVAL_COLORS = {
 // 21 Sep 2026 addendum — the startup's "RIV Approval Status" column shows
 // the real approval_status flag as-is (RIV's call), EXCEPT "GTM Notified":
 // that's internal plumbing (RIV has approved and told the GTM partner) —
-// from the startup's side it just reads as "RIV Approved". Admin/partner
-// screens keep showing the raw "GTM Notified" flag; this relabeling is
-// startup-display only.
+// from the startup's side it just reads as "RIV Approved". Partner screens
+// keep showing the raw "GTM Notified" flag.
+// 9 Oct 2026 batch, item 6 — admin's own introductions list ("Detail:"
+// badge in AdminIntroductionsView) now also runs through this, so admin
+// sees "RIV Approved" instead of the internal "GTM Notified" plumbing
+// state too, matching what the startup sees.
 function approvalStatusForStartup(approvalStatus) {
   return approvalStatus === "GTM Notified" ? "RIV Approved" : approvalStatus;
 }
@@ -2568,7 +2571,7 @@ function AdminIntroductionsView() {
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
             <span style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE" }}>Detail:</span>
-            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
+            <StatusBadge status={approvalStatusForStartup(i.approval_status)} colors={APPROVAL_COLORS} />
             <StatusBadge status={i.status} />
           </div>
           {/* item 13b — amber duplicate banner, mirroring
