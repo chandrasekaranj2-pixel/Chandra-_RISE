@@ -434,6 +434,15 @@ async function initSchema() {
     -- in the data which side (GTM partner vs RIV admin) logged the proof,
     -- even though both are surfaced the same way in the UI.
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS riv_proof_attachment JSONB;
+
+    -- 9 Oct 2026 batch, item 12 — soft-archive for old introductions, so
+    -- stale records can be tucked away without deleting anything. NULL =
+    -- active (the default, and what every existing row already is); admin
+    -- sets this via PUT /admin/introductions/:id/archive, and every list
+    -- query defaults to archived_at IS NULL unless the caller explicitly
+    -- asks to see the archive.
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS archived_by TEXT;
   `);
 
   // approval_status / engagement_stage (repurposed as Deal Status) both

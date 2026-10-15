@@ -185,11 +185,22 @@ export const api = {
   approveRetailer: (id) => request(`/admin/retailers/${id}/approve`, { method: "PUT" }),
   rejectRetailer: (id, reason) => request(`/admin/retailers/${id}/reject`, { method: "PUT", body: { reason } }),
   markRetailerInProcess: (id) => request(`/admin/retailers/${id}/mark-in-process`, { method: "PUT" }),
-  listIntroductionsAdmin: (status) => request(`/admin/introductions${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  // `archived` (item 12, 9 Oct 2026 batch): omit/false for the normal
+  // active list, true to view the archive instead — mirrors the backend's
+  // own default (archived_at IS NULL unless asked otherwise).
+  listIntroductionsAdmin: (status, archived) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (archived) params.set("archived", "true");
+    const qs = params.toString();
+    return request(`/admin/introductions${qs ? `?${qs}` : ""}`);
+  },
   createIntroductionAdmin: (payload) => request("/admin/introductions", { method: "POST", body: payload }),
   updateIntroductionAdmin: (id, payload) => request(`/admin/introductions/${id}`, { method: "PUT", body: payload }),
   approveIntroduction: (id) => request(`/admin/introductions/${id}/approve`, { method: "PUT" }),
   rejectIntroduction: (id) => request(`/admin/introductions/${id}/reject`, { method: "PUT" }),
+  archiveIntroductionAdmin: (id) => request(`/admin/introductions/${id}/archive`, { method: "PUT" }),
+  unarchiveIntroductionAdmin: (id) => request(`/admin/introductions/${id}/unarchive`, { method: "PUT" }),
   // RIV-direct proof logging (item 8) — same shape as logIntroductionWithProof
   // above but no declaration checkbox (admin is already trusted).
   logRivProof: (id, { channel, introductionDate }, proofFile) => {

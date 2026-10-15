@@ -428,13 +428,47 @@ const INTRO_SELECT_ADMIN = `
   LEFT JOIN introductions dup ON dup.id = i.duplicate_of_introduction_id
 `;
 
+// 9 Oct 2026 batch, item 12 — defaults to active (non-archived) rows only,
+// same as every other list in the app; pass ?archived=true to see the
+// archive instead (there's no "both" view — admin switches between the
+// two via a tab, same pattern as AdminRetailersView's status filter).
 router.get("/introductions", async (req, res, next) => {
   try {
-    const { status } = req.query;
+    const { status, archived } = req.query;
+    const archivedClause = archived === "true" ? "i.archived_at IS NOT NULL" : "i.archived_at IS NULL";
     const { rows } = status
-      ? await pool.query(`${INTRO_SELECT_ADMIN} WHERE i.status = $1 ORDER BY i.updated_at DESC`, [status])
-      : await pool.query(`${INTRO_SELECT_ADMIN} ORDER BY i.updated_at DESC`);
+      ? await pool.query(`${INTRO_SELECT_ADMIN} WHERE i.status = $1 AND ${archivedClause} ORDER BY i.updated_at DESC`, [status])
+      : await pool.query(`${INTRO_SELECT_ADMIN} WHERE ${archivedClause} ORDER BY i.updated_at DESC`);
     res.json({ introductions: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/introductions/:id/archive — PUT .../unarchive — soft
+// archive/restore (item 12). Archiving never changes approval_status,
+// status, engagement_stage, etc. — it's purely a visibility flag so old
+// records can be tucked out of the default list without deleting them.
+router.put("/introductions/:id/archive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE introductions SET archived_at = now(), archived_by = $2 WHERE id = $1 RETURNING *",
+      [req.params.id, req.user.name]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
+    res.json({ introduction: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+router.put("/introductions/:id/unarchive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE introductions SET archived_at = NULL, archived_by = NULL WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
+    res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
   }
@@ -493,6 +527,26 @@ router.post("/introductions", async (req, res, next) => {
     if (!retailer) return res.status(404).json({ error: "Retailer not found." });
     if (retailer.network_source === "GTM Partner") {
       return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Opportunity." });
+    }
+
+    // 9 Oct 2026 batch, item 10 — this route had no duplicate-pairing check
+    // at all (the GTM partner's own "Check Introduction Interest" form
+    // already blocks duplicates server-side; this admin path was the
+    // gap), so the same startup-retailer pair could be submitted as a new
+    // opportunity over and over. Mirrors createPartnerInitiatedIntroduction
+    // in portal.js, reusing its LIVE_PAIRING_SQL fragment.
+    const { rows: dupRows } = await pool.query(
+      `SELECT i.*, s.startup_name, r.name AS retailer_name FROM introductions i
+       JOIN startups s ON s.id = i.startup_id JOIN retailers r ON r.id = i.retailer_id
+       WHERE i.startup_id = $1 AND i.retailer_id = $2 AND ${portalRoutes.LIVE_PAIRING_SQL} ORDER BY i.created_at ASC LIMIT 1`,
+      [startupId, retailerId]
+    );
+    if (dupRows[0]) {
+      const dup = dupRows[0];
+      const initiatorLabel = dup.initiated_by === "RIV Admin" ? "RIV" : dup.initiated_by;
+      return res.status(409).json({
+        error: `${dup.startup_name} has already been introduced to ${dup.retailer_name} — this pairing is already in the pipeline (Initiated by ${initiatorLabel}). Check the existing introductions list instead of submitting a duplicate.`,
+      });
     }
 
     const { rows } = await pool.query(
