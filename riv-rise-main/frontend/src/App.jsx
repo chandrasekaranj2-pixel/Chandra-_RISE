@@ -47,13 +47,26 @@ const APPROVAL_COLORS = {
   "Proof Recorded": { bg: "#E6F4EA", fg: "#1E7A34" },
 };
 // 21 Sep 2026 addendum — the startup's "RIV Approval Status" column shows
-// the real approval_status flag as-is (RIV's call), EXCEPT "GTM Notified":
-// that's internal plumbing (RIV has approved and told the GTM partner) —
-// from the startup's side it just reads as "RIV Approved". Admin/partner
-// screens keep showing the raw "GTM Notified" flag; this relabeling is
-// startup-display only.
+// the real approval_status flag as-is (RIV's call), EXCEPT "GTM Notified"
+// and "Startup Confirmed": both are internal plumbing from the startup's
+// point of view (RIV has approved it — whether or not a GTM partner still
+// needs to be looped in isn't the startup's concern), so both read as
+// "RIV Approved" here. Admin/partner screens keep showing the raw values
+// ("GTM Notified" as-is; "Startup Confirmed" relabeled separately for
+// admin via approvalStatusForAdmin below) — this relabeling is
+// startup-display only, the stored approval_status is untouched.
 function approvalStatusForStartup(approvalStatus) {
-  return approvalStatus === "GTM Notified" ? "RIV Approved" : approvalStatus;
+  return approvalStatus === "GTM Notified" || approvalStatus === "Startup Confirmed" ? "RIV Approved" : approvalStatus;
+}
+// 15 Oct 2026 — admin's "Detail:" badge shows "Startup Confirmed" as
+// "Introduction Approved" instead: from RIV's side, this stage just means
+// RIV approved the introduction request, which is clearer to an admin
+// reading the card than the (startup-centric) raw status name. Display
+// only — the stored approval_status value is untouched, so the Approve /
+// Log Introduction logic keyed off the literal "Startup Confirmed" string
+// elsewhere in this file still works exactly as before.
+function approvalStatusForAdmin(approvalStatus) {
+  return approvalStatus === "Startup Confirmed" ? "Introduction Approved" : approvalStatus;
 }
 // Deal Status (18 Sep 2026 addendum — Startup Retailer Introductions
 // two-tab split). Must match backend/db.js's DEAL_STATUSES exactly (kept
@@ -2245,7 +2258,7 @@ function AdminIntroductionsView() {
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
             <span style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE" }}>Detail:</span>
-            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
+            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} label={approvalStatusForAdmin(i.approval_status)} />
             <StatusBadge status={i.status} />
           </div>
           {/* item 13b — amber duplicate banner, mirroring
