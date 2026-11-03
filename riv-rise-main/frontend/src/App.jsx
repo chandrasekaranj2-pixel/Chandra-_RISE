@@ -1996,13 +1996,20 @@ function AdminPartnersView() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <GhostButton onClick={() => setEditingPartner(p)}>Edit</GhostButton>
-            {p.portal_login_status !== "Provisioned" && (
-              provisioning === p.id ? (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                  <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
-                </div>
-              ) : <GhostButton onClick={() => setProvisioning(p.id)}>Provision login</GhostButton>
+            {/* 3 Nov 2026 fix — reset-password path: the status gate used to hide
+                this entirely once portal_login_status === "Provisioned", leaving
+                no way to change an existing partner's password from the UI. The
+                backend route already upserts the password on re-provision, so we
+                just always show the control and relabel it when one already exists. */}
+            {provisioning === p.id ? (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
+                <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
+              </div>
+            ) : (
+              <GhostButton onClick={() => setProvisioning(p.id)}>
+                {p.portal_login_status === "Provisioned" ? "Reset password" : "Provision login"}
+              </GhostButton>
             )}
           </div>
         </Card>
@@ -2153,7 +2160,13 @@ function AdminStartupsView() {
   const [detailStartupId, setDetailStartupId] = useState(null);
   const [editingStartup, setEditingStartup] = useState(null);
 
-  const load = useCallback(() => api.listStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message)), []);
+  // 15 Oct 2026 — an "Inactive" startup (deactivated via a demo-data
+  // cleanup, e.g. before re-seeding a fresh account under the same name)
+  // is filtered out of this list entirely rather than shown with a status
+  // badge: admin shouldn't have to tell it apart from the live roster
+  // during a call. The row itself isn't deleted, so it's still there in
+  // the database if it ever needs to be reactivated.
+  const load = useCallback(() => api.listStartups().then((r) => setStartups(r.startups.filter((s) => s.status !== "Inactive"))).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
   async function createStartup() {
@@ -2201,13 +2214,17 @@ function AdminStartupsView() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <GhostButton onClick={() => setDetailStartupId(s.id)}>View Details</GhostButton>
             <GhostButton onClick={() => setEditingStartup(s)}>Edit</GhostButton>
-            {s.portal_login_status !== "Provisioned" && (
-              provisioning === s.id ? (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
-                </div>
-              ) : <GhostButton onClick={() => setProvisioning(s.id)}>Provision login</GhostButton>
+            {/* 3 Nov 2026 fix — same reset-password gate removed as on the
+                Partners card; see comment there. */}
+            {provisioning === s.id ? (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
+                <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
+              </div>
+            ) : (
+              <GhostButton onClick={() => setProvisioning(s.id)}>
+                {s.portal_login_status === "Provisioned" ? "Reset password" : "Provision login"}
+              </GhostButton>
             )}
           </div>
         </Card>
@@ -2701,7 +2718,9 @@ function NewOpportunityModal({ onClose, onCreated }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.listStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message));
+    // 15 Oct 2026 — same "Inactive" filter as AdminStartupsView, so a
+    // deactivated startup can't be picked here either.
+    api.listStartups().then((r) => setStartups(r.startups.filter((s) => s.status !== "Inactive"))).catch((e) => setError(e.message));
     api.listRetailersAdmin().then((r) => setRetailers(r.retailers.filter((x) => x.network_source === "RIV Direct"))).catch((e) => setError(e.message));
   }, []);
 
