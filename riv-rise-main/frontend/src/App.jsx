@@ -47,13 +47,31 @@ const APPROVAL_COLORS = {
   "Proof Recorded": { bg: "#E6F4EA", fg: "#1E7A34" },
 };
 // 21 Sep 2026 addendum — the startup's "RIV Approval Status" column shows
-// the real approval_status flag as-is (RIV's call), EXCEPT "GTM Notified":
-// that's internal plumbing (RIV has approved and told the GTM partner) —
-// from the startup's side it just reads as "RIV Approved". Admin/partner
-// screens keep showing the raw "GTM Notified" flag; this relabeling is
-// startup-display only.
+// the real approval_status flag as-is (RIV's call), EXCEPT "GTM Notified"
+// and "Startup Confirmed": both are internal plumbing from the startup's
+// point of view (RIV has approved it — whether or not a GTM partner still
+// needs to be looped in isn't the startup's concern), so both read as
+// "RIV Approved" here. Admin/partner screens keep showing the raw
+// "GTM Notified" flag as-is ("Startup Confirmed" is relabeled separately
+// for admin via approvalStatusForAdmin below) — this relabeling is
+// startup-display only, the stored approval_status is untouched.
 function approvalStatusForStartup(approvalStatus) {
-  return approvalStatus === "GTM Notified" ? "RIV Approved" : approvalStatus;
+  return approvalStatus === "GTM Notified" || approvalStatus === "Startup Confirmed" ? "RIV Approved" : approvalStatus;
+}
+// 15 Oct 2026 — admin's "Detail:" badge relabels two internal-plumbing
+// values to clearer, RIV-centric text: "Startup Confirmed" shows as
+// "Introduction Approved" (from RIV's side this stage just means RIV
+// approved the introduction request), and "GTM Notified" shows as
+// "RIV Approved" (9 Oct 2026 batch, item 6 — admin doesn't need to see the
+// internal GTM-notification plumbing state either, matching what the
+// startup already sees). Display only — the stored approval_status value
+// is untouched, so the Approve / Log Introduction logic keyed off the
+// literal "Startup Confirmed" string elsewhere in this file still works
+// exactly as before.
+function approvalStatusForAdmin(approvalStatus) {
+  if (approvalStatus === "Startup Confirmed") return "Introduction Approved";
+  if (approvalStatus === "GTM Notified") return "RIV Approved";
+  return approvalStatus;
 }
 // Deal Status (18 Sep 2026 addendum — Startup Retailer Introductions
 // two-tab split). Must match backend/db.js's DEAL_STATUSES exactly (kept
@@ -105,6 +123,24 @@ const RETAILER_STATUS_COLORS = {
 // "Submitted for review" everywhere a partner or admin sees it.
 const RETAILER_STATUS_LABELS = { "Prospect": "Submitted for review" };
 function retailerStatusLabel(status) { return RETAILER_STATUS_LABELS[status] || status; }
+// item 1 (25 Sep 2026 batch) — "My Retail Network" specific relabeling,
+// distinct from retailerStatusLabel() above (used elsewhere, e.g. the
+// startup's own view) and from the admin-facing labels (item 4, see
+// ADMIN_RETAILER_STATUS_LABELS). Duplicate/Rejected are unchanged here.
+const PARTNER_RETAILER_STATUS_LABELS = {
+  "Prospect": "Submitted – Awaiting RIV Review",
+  "In Process": "Under RIV Review",
+  "Active in network": "Approved – Ready to Introduce",
+};
+function retailerStatusLabelForPartner(status) { return PARTNER_RETAILER_STATUS_LABELS[status] || status; }
+// item 4 (25 Sep 2026 batch) — Admin Retailers tab's own status relabeling.
+const ADMIN_RETAILER_STATUS_LABELS = {
+  "Prospect": "New Submission",
+  "In Process": "Under Review",
+  "Active in network": "Approved",
+  "Duplicate": "Duplicate – Compare Before Approving",
+};
+function retailerStatusLabelForAdmin(status) { return ADMIN_RETAILER_STATUS_LABELS[status] || status; }
 
 // Simplified two-part status display (19 Sep 2026 feedback) — GTM/admin/
 // startup all previously saw the raw approval_status chain (Pending RIV
@@ -131,7 +167,14 @@ const INTRODUCED_STATUS_COLORS = {
   "Yet to introduce": { bg: "#F3F1EE", fg: "#8A857F" },
   "Introduced": { bg: "#E8F0FE", fg: BRAND.blue },
 };
-function introducedStatusFor(status) {
+// item 14 fix (25 Sep 2026 batch): a deal that has already reached a
+// closed engagement_stage (Closed - Won/Lost, Stalled) must always read as
+// "Introduced" here, even if the underlying `status` column was never
+// advanced past a pre-introduction value — closed necessarily implies
+// introduced. engagementStage is optional (older call sites can still omit
+// it) so this stays backward compatible; pass it wherever available.
+function introducedStatusFor(status, engagementStage) {
+  if (["Closed - Won", "Closed - Lost", "Stalled"].includes(engagementStage)) return "Introduced";
   if (["Requested", "Pending Startup Agreement", "Approved"].includes(status)) return "Yet to introduce";
   return "Introduced"; // Introduced, In Progress, Closed - Won/Lost, Stalled, Invoiced, Paid, Payout Complete
 }
@@ -189,6 +232,29 @@ function ErrorBanner({ text }) {
       <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{text}</div>
     </div>
   );
+}
+// 9 Oct 2026 batch, item 1 — acknowledgement banner for a successful
+// create action (new GTM partner, new retailer, etc.), same shape as
+// ErrorBanner but green. Callers clear it themselves (e.g. on the next
+// edit or after a short timeout) — see useSuccessMessage() below.
+function SuccessBanner({ text }) {
+  if (!text) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderRadius: 12, background: "#E6F4EA", border: "1px solid #BFE3C9", marginBottom: 16 }}>
+      <CheckCircle2 size={15} color="#1E7A34" />
+      <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{text}</div>
+    </div>
+  );
+}
+// Small helper: holds a success message and auto-clears it after a few
+// seconds, so callers don't have to manage their own timers.
+function useSuccessMessage() {
+  const [message, setMessage] = useState("");
+  function show(text) {
+    setMessage(text);
+    setTimeout(() => setMessage((m) => (m === text ? "" : m)), 4000);
+  }
+  return [message, show];
 }
 function Spinner({ label }) {
   return (
@@ -374,7 +440,27 @@ function IntroCard({ intro, onOpen }) {
   );
 }
 
-function IntroDetailModal({ intro, user, onClose, onRefresh }) {
+// item 15/2b helper — "Initiated by: ..." label, shared by the GTM
+// partner's unified feed, the Partner Dashboard tags, and this modal's
+// own "Initiated by" row. "RIV Admin" reads as "RIV" everywhere a human
+// sees it; the raw value is unchanged.
+function initiatorLabel(initiatedBy) {
+  return initiatedBy === "RIV Admin" ? "RIV" : initiatedBy;
+}
+
+// item 5 (25 Sep 2026 batch) — consolidated introduction detail modal,
+// replacing the two previous components (the legacy action-taking
+// IntroDetailModal, used via root's openIntro state for partner/startup,
+// and the admin-only read-only IntroViewDetailsModal with its
+// isAdmin-hardcoded-true file-list gating). isAdmin is now a real prop
+// every call site passes explicitly. `user` is optional — when present
+// (today, only the GTM partner's "Check Introduction Interest" list),
+// the interactive follow-up/confirm-sale/confirm-introduction actions
+// from the old IntroDetailModal render for that partner/startup; call
+// sites that only need a read-only "View Details" (items 6, 7, and
+// admin's own use) omit `user` and get pure display, same as the old
+// IntroViewDetailsModal did.
+function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [followUpNote, setFollowUpNote] = useState("");
@@ -382,14 +468,16 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
   const [dealValue, setDealValue] = useState("");
   const [poDocument, setPoDocument] = useState("");
   const [proofFileError, setProofFileError] = useState("");
+  const [rivProofFileError, setRivProofFileError] = useState("");
+  const [fileError, setFileError] = useState("");
 
-  const isPartner = user.role === "partner";
-  const isStartup = user.role === "startup";
-  const isAdmin = user.role === "admin";
+  const isPartner = !isAdmin && user?.role === "partner";
+  const isStartup = !isAdmin && user?.role === "startup";
+  const isRivInitiated = intro.initiated_by === "RIV Admin";
 
   async function run(fn) {
     setError(""); setBusy(true);
-    try { await fn(); await onRefresh(); onClose(); }
+    try { await fn(); if (onRefresh) await onRefresh(); onClose(); }
     catch (err) { setError(err.message || "Something went wrong."); }
     finally { setBusy(false); }
   }
@@ -404,17 +492,86 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
     const opener = isAdmin ? api.openProofAttachmentAdmin : api.openProofAttachment;
     opener(intro.id).catch((e) => setProofFileError(e.message));
   }
+  // item 3 (25 Sep 2026 batch) — RIV-direct proof (item 8), admin-only.
+  function openRivProofFile() {
+    setRivProofFileError("");
+    api.openRivProofAttachmentAdmin(intro.id).catch((e) => setRivProofFileError(e.message));
+  }
+  function openSupportingFile(index) {
+    if (!isAdmin) return;
+    setFileError("");
+    api.openSupportingMaterialAdmin(intro.id, index).catch((e) => setFileError(e.message));
+  }
+
+  const rows = [
+    ["Retailer", intro.retailer_name],
+    ["Startup", intro.startup_name],
+    ["Category", intro.retailer_category],
+    ["Network", intro.partner_name ? `via ${intro.partner_name}` : "RIV direct"],
+    ["Initiated by", initiatorLabel(intro.initiated_by)],
+    [isRivInitiated ? "Initiated Date" : "Requested Date", dateStr(intro.request_date)],
+    // 9 Oct 2026 batch — "Introduction interest status" row (and its
+    // "Awaiting Startup interest" wording) is admin/startup-only now; the
+    // GTM partner's flow dropped it (see CheckIntroductionInterestSection /
+    // PartnerDashboardView, and the simplified 409 copy in portal.js).
+    ...(isRivInitiated || isPartner ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
+    ["Actual Introduction status", introducedStatusFor(intro.status, intro.engagement_stage)],
+    ["Deal Status", intro.engagement_stage || "—"],
+    ["Opportunity Value", opportunityMoney(intro.opportunity_value)],
+    ["Startup Commit Status", intro.startup_commit_status || "Not yet responded"],
+    ["Last Updated", `${dateStr(intro.updated_at)}${intro.updated_by ? ` · ${intro.updated_by}` : ""}`],
+  ];
+  const requestRows = [
+    ["Why interested", intro.why_interested],
+    ["Problem solved for enterprise", intro.problem_solved],
+    ["Relevant product/offering", intro.relevant_offering],
+    ["Desired buyer persona", intro.buyer_persona],
+    ["Previously engaged", intro.previously_engaged === null ? null : (intro.previously_engaged ? "Yes" : "No")],
+    ["Prior engagement details", intro.prior_engagement_details],
+    // Pre-18-Sep-2026 rows only, from back when this was a free-text URL
+    // field — new submissions use the uploaded-file list rendered below.
+    // 24 Sep 2026 addendum: admin-viewing-only, like the file list below.
+    ...(isAdmin ? [["Supporting material (link)", intro.supporting_material_url]] : []),
+    ["Opportunity context", intro.gtm_context_note],
+    ["How the partner introduced this", intro.how_introduced],
+  ].filter(([, v]) => v);
+  const proofRows = [
+    ["Channel", intro.channel],
+    ["Introduction date", intro.introduction_date ? dateStr(intro.introduction_date) : null],
+    ["Proof of introduction", intro.proof_of_introduction],
+  ].filter(([, v]) => v);
+  // 24 Sep 2026 addendum: Supporting Material is admin-viewing-only — the
+  // actual file list only ever arrives for isAdmin (see publicIntro() in
+  // portal.js), so gate on isAdmin here too rather than relying solely on
+  // what the API happened to send.
+  const supportingMaterialFiles = isAdmin ? (intro.supporting_material || []) : [];
+  const supportingMaterialCount = isAdmin
+    ? supportingMaterialFiles.length
+    : (intro.supporting_material_count || 0);
+  // item 3 (25 Sep 2026 batch) — "Proof submitted" line: partner-submitted
+  // proof (approval_status = 'Proof Recorded') uses the ordinary proof
+  // viewer; RIV-direct proof (item 8, riv_proof_attachment) uses its own
+  // admin route instead — a RIV-direct intro can be at 'Proof Recorded'
+  // too, so check the RIV-direct attachment first.
+  const hasRivProof = isAdmin && !!intro.riv_proof_attachment;
+  const showProofSubmittedLine = isAdmin && (intro.approval_status === "Proof Recorded" || hasRivProof) && intro.channel;
 
   return (
     <Modal title={`${intro.startup_name} → ${intro.retailer_name}`} onClose={onClose} width={560}>
       <ErrorBanner text={error} />
+
+      {/* item 13b — amber duplicate-pairing warning, admin only (mirrors
+          AdminRetailersView's retailer-duplicate banner style/copy). */}
+      {isAdmin && intro.duplicate_of_introduction_id && (
+        <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 10, padding: "10px 14px", marginBottom: 16, lineHeight: 1.6 }}>
+          <strong>Possible duplicate</strong> — {intro.startup_name} was already introduced to {intro.retailer_name} on {dateStr(intro.duplicate_of_request_date)}, currently {interestStatusFor(intro.duplicate_of_approval_status)} (Initiated by {initiatorLabel(intro.duplicate_of_initiated_by)}). Review before approving.
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />
-        <StatusBadge status={introducedStatusFor(intro.status)} colors={INTRODUCED_STATUS_COLORS} />
+        {!isPartner && <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />}
+        <StatusBadge status={introducedStatusFor(intro.status, intro.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
         {intro.engagement_stage && <StatusBadge status={intro.engagement_stage} />}
-        <span style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>
-          {intro.partner_name ? `Partner: ${intro.partner_name}` : "RIV direct"} · Intro rate {intro.intro_rate}% / Closure rate {intro.closure_rate}%
-        </span>
       </div>
 
       {intro.deal_value && (
@@ -427,8 +584,31 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
         </div>
       )}
 
-      {intro.proof_of_introduction && (
-        <div style={{ marginBottom: 14, fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>
+      {rows.map(([label, value]) => (
+        <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: `1px solid ${BRAND.line}` }}>
+          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>{label}</div>
+          <div style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, color: BRAND.ink, textAlign: "right" }}>{value}</div>
+        </div>
+      ))}
+
+      {/* item 3 — "Proof submitted" audit line, admin only. */}
+      {showProofSubmittedLine && (
+        <div style={{ marginTop: 14, fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>
+          <strong>Proof submitted</strong> — {intro.channel}, {dateStr(intro.introduction_date)}
+          {" · "}
+          <button
+            type="button"
+            onClick={hasRivProof ? openRivProofFile : openProofFile}
+            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: FONT, fontSize: 12.5, color: BRAND.coral, textDecoration: "underline" }}
+          >
+            View proof
+          </button>
+          {rivProofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 4 }}>{rivProofFileError}</div>}
+        </div>
+      )}
+
+      {intro.proof_of_introduction && !showProofSubmittedLine && (
+        <div style={{ marginTop: 14, fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>
           <strong>Proof of introduction</strong> ({intro.channel}, {dateStr(intro.introduction_date)}): {intro.proof_of_introduction}
           {intro.proof_attachment && (
             <>
@@ -445,9 +625,90 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
           {proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 4 }}>{proofFileError}</div>}
         </div>
       )}
+      {/* Non-admin: once proof is recorded, the same file is openable via
+          the owner-scoped route (item 6 — "View proof", no admin auth
+          needed). */}
+      {!isAdmin && intro.approval_status === "Proof Recorded" && (
+        <div style={{ marginTop: 14 }}>
+          <GhostButton onClick={openProofFile}>View proof</GhostButton>
+          {proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 6 }}>{proofFileError}</div>}
+        </div>
+      )}
+
+      {!!requestRows.length && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>
+            {isRivInitiated ? "Opportunity context" : "Original request"}
+          </div>
+          {requestRows.map(([label, value]) => (
+            <div key={label} style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 }}>{label}</div>
+              <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!!proofRows.length && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>Supporting documents</div>
+          {proofRows.map(([label, value]) => (
+            <div key={label} style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 }}>{label}</div>
+              <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{value}</div>
+            </div>
+          ))}
+          {isAdmin && intro.proof_attachment && (
+            <button
+              type="button"
+              onClick={openProofFile}
+              style={{
+                display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+                background: "none", border: `1px solid ${BRAND.line}`, borderRadius: 9, padding: "8px 10px",
+                cursor: "pointer", fontFamily: FONT, fontSize: 12.5, color: BRAND.coral,
+              }}
+            >
+              <Paperclip size={13} /> {intro.proof_attachment.name}
+            </button>
+          )}
+        </div>
+      )}
+
+      {isAdmin && !!supportingMaterialFiles.length && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>Supporting material</div>
+          {fileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginBottom: 8 }}>{fileError}</div>}
+          {supportingMaterialFiles.map((file, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => openSupportingFile(i)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+                background: "none", border: `1px solid ${BRAND.line}`, borderRadius: 9, padding: "8px 10px",
+                marginBottom: 6, cursor: "pointer", fontFamily: FONT, fontSize: 12.5, color: BRAND.coral,
+              }}
+            >
+              <Paperclip size={13} /> {file.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 24 Sep 2026 addendum: non-admin (partner/startup) never sees the
+          actual files or a way to open them — just a count. Item 6:
+          "Must NOT show supporting material files". */}
+      {!isAdmin && supportingMaterialCount > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 6 }}>Supporting material</div>
+          <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F" }}>
+            {supportingMaterialCount} file{supportingMaterialCount === 1 ? "" : "s"} attached — viewable by RIV admin only.
+          </div>
+        </div>
+      )}
 
       {!!intro.follow_up_log?.length && (
-        <div style={{ marginBottom: 18 }}>
+        <div style={{ marginTop: 18 }}>
           <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 8 }}>Follow-up log</div>
           {intro.follow_up_log.map((f, i) => (
             <div key={i} style={{ fontFamily: FONT, fontSize: 12, color: "#7A756F", padding: "8px 0", borderTop: i ? `1px solid ${BRAND.line}` : "none" }}>
@@ -457,78 +718,92 @@ function IntroDetailModal({ intro, user, onClose, onRefresh }) {
         </div>
       )}
 
-      {/* Startup confirms after RIV has approved and the GTM partner has
-          been notified (addendum §3's approval chain). */}
-      {isStartup && intro.approval_status === "GTM Notified" && (
-        <Card style={{ padding: 14, marginBottom: 14, background: "#FFF9F0" }}>
-          <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, marginBottom: 10, lineHeight: 1.6 }}>
-            RIV has approved this request and notified {intro.partner_name || "RIV Ops"}. Confirm to let them make the introduction.
-          </div>
-          <PrimaryButton disabled={busy} onClick={() => run(() => api.confirmRequest(intro.id))}>Confirm introduction</PrimaryButton>
-        </Card>
-      )}
-      {intro.approval_status === "Pending RIV Approval" && (
-        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#B8790A", padding: "10px 14px", background: "#FFF4E0", borderRadius: 10, marginBottom: 14 }}>
-          Waiting on RIV's review before this moves forward.
-        </div>
-      )}
-      {intro.approval_status === "Rejected" && (
-        <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.coralDark, padding: "10px 14px", background: "#FBEAEA", borderRadius: 10, marginBottom: 14 }}>
-          RIV declined this request.
-        </div>
+      {/* Everything below is the interactive partner/startup action set
+          from the old IntroDetailModal — only rendered when a `user` is
+          passed in (today: the GTM partner's "Check Introduction
+          Interest" list). A plain "View Details" call site (items 6, 7,
+          and admin) passes no `user` and gets none of this — display only,
+          same as the old IntroViewDetailsModal's "no actions here on
+          purpose" design. */}
+      {user && (
+        <>
+          {isStartup && intro.approval_status === "GTM Notified" && (
+            <Card style={{ padding: 14, marginTop: 18, background: "#FFF9F0" }}>
+              <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, marginBottom: 10, lineHeight: 1.6 }}>
+                RIV has approved this request and notified {intro.partner_name || "RIV Ops"}. Confirm to let them make the introduction.
+              </div>
+              <PrimaryButton disabled={busy} onClick={() => run(() => api.confirmRequest(intro.id))}>Confirm introduction</PrimaryButton>
+            </Card>
+          )}
+          {intro.approval_status === "Pending RIV Approval" && (
+            <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#B8790A", padding: "10px 14px", background: "#FFF4E0", borderRadius: 10, marginTop: 18 }}>
+              Waiting on RIV's review before this moves forward.
+            </div>
+          )}
+          {intro.approval_status === "Rejected" && (
+            <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.coralDark, padding: "10px 14px", background: "#FBEAEA", borderRadius: 10, marginTop: 18 }}>
+              RIV declined this request.
+            </div>
+          )}
+
+          {/* Partner logs proof once the startup has confirmed — moved to
+              the page-level "Submit Proof of Startup-Retailer
+              Introduction" section (19 Sep 2026 feedback); this modal
+              just points there. */}
+          {isPartner && intro.approval_status === "Startup Confirmed" && (
+            <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#B8790A", padding: "10px 14px", background: "#FFF4E0", borderRadius: 10, marginTop: 18 }}>
+              The startup has confirmed — log this introduction from "Submit Proof of Startup-Retailer Introduction" on the Introduce Startup to Retailers page.
+            </div>
+          )}
+
+          {/* Follow-up (either party, once Introduced/In Progress) */}
+          {(isPartner || isStartup) && ["Introduced", "In Progress"].includes(intro.status) && (
+            <Card style={{ padding: 14, marginTop: 18 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, marginBottom: 10 }}>Add a follow-up</div>
+              <Field label="Engagement stage">
+                <select style={inputStyle} value={engagementStage} onChange={(e) => setEngagementStage(e.target.value)}>
+                  <option value="">— unchanged —</option>
+                  <option>In discussion</option><option>Piloting</option><option>Stalled</option><option>Won</option><option>Lost</option>
+                </select>
+              </Field>
+              <Field label="Note" required>
+                <textarea style={{ ...inputStyle, minHeight: 60 }} value={followUpNote} onChange={(e) => setFollowUpNote(e.target.value)} />
+              </Field>
+              <div style={{ display: "flex", gap: 8 }}>
+                <PrimaryButton disabled={busy || !followUpNote} onClick={() => run(() => api.followUpIntroduction(intro.id, { note: followUpNote, engagementStage: engagementStage || undefined }))}>Save follow-up</PrimaryButton>
+                <GhostButton disabled={busy} onClick={() => run(() => api.closeIntroduction(intro.id, { outcome: "Lost" }))}>Mark lost</GhostButton>
+                <GhostButton disabled={busy} onClick={() => run(() => api.closeIntroduction(intro.id, { outcome: "Stalled" }))}>Mark stalled</GhostButton>
+              </div>
+            </Card>
+          )}
+
+          {/* Startup confirms the sale */}
+          {isStartup && ["Introduced", "In Progress"].includes(intro.status) && (
+            <Card style={{ padding: 14, marginTop: 18 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, marginBottom: 10 }}>Confirm a closed sale</div>
+              <Field label="Deal value (₹)" required>
+                <input style={inputStyle} type="number" min="0" value={dealValue} onChange={(e) => setDealValue(e.target.value)} />
+              </Field>
+              <Field label="PO / sale document" required hint="Paste a link, reference number, or short description.">
+                <input style={inputStyle} value={poDocument} onChange={(e) => setPoDocument(e.target.value)} />
+              </Field>
+              <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 12 }}>
+                RIV's closure fee ({intro.closure_rate}%) will apply: {dealValue ? money(Number(dealValue) * intro.closure_rate / 100) : "—"}
+              </div>
+              <PrimaryButton disabled={busy || !dealValue || !poDocument} onClick={() => run(() => api.confirmSale(intro.id, { dealValue: Number(dealValue), poDocument }))}>Confirm sale — Closed, Won</PrimaryButton>
+            </Card>
+          )}
+
+          {intro.status === "Closed - Won" && (
+            <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", padding: "10px 14px", background: "#E6F4EA", borderRadius: 10, marginTop: 18 }}>
+              Deal closed — invoicing and payout are handled by RIV Admin.
+            </div>
+          )}
+        </>
       )}
 
-      {/* Partner logs proof once the startup has confirmed — moved to the
-          page-level "Submit Proof of Startup-Retailer Introduction"
-          section (19 Sep 2026 feedback); this modal just points there. */}
-      {isPartner && intro.approval_status === "Startup Confirmed" && (
-        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#B8790A", padding: "10px 14px", background: "#FFF4E0", borderRadius: 10, marginBottom: 14 }}>
-          The startup has confirmed — log this introduction from "Submit Proof of Startup-Retailer Introduction" on the Introduce Startup to Retailers page.
-        </div>
-      )}
-
-      {/* Follow-up (either party, once Introduced/In Progress) */}
-      {(isPartner || isStartup) && ["Introduced", "In Progress"].includes(intro.status) && (
-        <Card style={{ padding: 14, marginBottom: 14 }}>
-          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, marginBottom: 10 }}>Add a follow-up</div>
-          <Field label="Engagement stage">
-            <select style={inputStyle} value={engagementStage} onChange={(e) => setEngagementStage(e.target.value)}>
-              <option value="">— unchanged —</option>
-              <option>In discussion</option><option>Piloting</option><option>Stalled</option><option>Won</option><option>Lost</option>
-            </select>
-          </Field>
-          <Field label="Note" required>
-            <textarea style={{ ...inputStyle, minHeight: 60 }} value={followUpNote} onChange={(e) => setFollowUpNote(e.target.value)} />
-          </Field>
-          <div style={{ display: "flex", gap: 8 }}>
-            <PrimaryButton disabled={busy || !followUpNote} onClick={() => run(() => api.followUpIntroduction(intro.id, { note: followUpNote, engagementStage: engagementStage || undefined }))}>Save follow-up</PrimaryButton>
-            <GhostButton disabled={busy} onClick={() => run(() => api.closeIntroduction(intro.id, { outcome: "Lost" }))}>Mark lost</GhostButton>
-            <GhostButton disabled={busy} onClick={() => run(() => api.closeIntroduction(intro.id, { outcome: "Stalled" }))}>Mark stalled</GhostButton>
-          </div>
-        </Card>
-      )}
-
-      {/* Startup confirms the sale */}
-      {isStartup && ["Introduced", "In Progress"].includes(intro.status) && (
-        <Card style={{ padding: 14, marginBottom: 14 }}>
-          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, marginBottom: 10 }}>Confirm a closed sale</div>
-          <Field label="Deal value (₹)" required>
-            <input style={inputStyle} type="number" min="0" value={dealValue} onChange={(e) => setDealValue(e.target.value)} />
-          </Field>
-          <Field label="PO / sale document" required hint="Paste a link, reference number, or short description.">
-            <input style={inputStyle} value={poDocument} onChange={(e) => setPoDocument(e.target.value)} />
-          </Field>
-          <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 12 }}>
-            RIV's closure fee ({intro.closure_rate}%) will apply: {dealValue ? money(Number(dealValue) * intro.closure_rate / 100) : "—"}
-          </div>
-          <PrimaryButton disabled={busy || !dealValue || !poDocument} onClick={() => run(() => api.confirmSale(intro.id, { dealValue: Number(dealValue), poDocument }))}>Confirm sale — Closed, Won</PrimaryButton>
-        </Card>
-      )}
-
-      {intro.status === "Closed - Won" && (
-        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", padding: "10px 14px", background: "#E6F4EA", borderRadius: 10 }}>
-          Deal closed — invoicing and payout are handled by RIV Admin.
-        </div>
+      {!requestRows.length && !proofRows.length && !supportingMaterialCount && !intro.follow_up_log?.length && !user && (
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F", marginTop: 14 }}>No supporting documents on file yet.</div>
       )}
     </Modal>
   );
@@ -789,20 +1064,16 @@ function RequestIntroductionModal({ retailer, onClose, onCreated }) {
 // introductions against different startups at once.
 function RetailerDirectoryView({ user, onRequest }) {
   const [retailers, setRetailers] = useState(null);
-  const [introsByRetailer, setIntrosByRetailer] = useState({});
   const [error, setError] = useState("");
-  const load = useCallback(() => api.getRetailers().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), []);
+  // item 1 (25 Sep 2026 batch): "My Retail Network" is a pure retailer
+  // directory now, scoped to only what this partner owns/submitted — no
+  // per-retailer introduction rows any more (that activity now lives in
+  // the unified feed on "Introduce Startup to Retailers", item 2).
+  const load = useCallback(
+    () => api.getRetailers({ mine: user.role === "partner" }).then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)),
+    [user.role]
+  );
   useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (user.role !== "partner") return;
-    api.getIntroductions().then((r) => {
-      const byRetailer = {};
-      for (const i of r.introductions) {
-        (byRetailer[i.retailer_id] ||= []).push(i);
-      }
-      setIntrosByRetailer(byRetailer);
-    }).catch((e) => setError(e.message));
-  }, [user.role]);
   if (error) return <ErrorBanner text={error} />;
   if (!retailers) return <Spinner />;
   if (!retailers.length) return (
@@ -811,46 +1082,30 @@ function RetailerDirectoryView({ user, onRequest }) {
   );
   return (
     <div>
-      {retailers.map((r) => {
-        const retailerIntros = introsByRetailer[r.id] || [];
-        return (
-          <Card key={r.id} style={{ padding: 16, marginBottom: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14 }}>
-              <div>
-                <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{r.brand || r.name}</div>
-                <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{r.category} · {r.location}{r.hq_country ? `, ${r.hq_country}` : ""}</div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                {user.role === "partner" && <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabel(r.status)} />}
-                {user.role === "startup" && <PrimaryButton icon={Send} onClick={() => onRequest(r)}>Request intro</PrimaryButton>}
-              </div>
+      {retailers.map((r) => (
+        <Card key={r.id} style={{ padding: 16, marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14 }}>
+            <div>
+              <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{r.brand || r.name}</div>
+              <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{r.category} · {r.location}{r.hq_country ? `, ${r.hq_country}` : ""}</div>
             </div>
-            {user.role === "partner" && r.status === "Rejected" && r.rejection_reason && (
-              <div style={{ fontFamily: FONT, fontSize: 12, color: BRAND.coralDark, background: "#FBEAEA", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
-                RIV's note: {r.rejection_reason}
-              </div>
-            )}
-            {user.role === "partner" && r.status === "Duplicate" && (
-              <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
-                This looks similar to a retailer already on file — RIV will review before approving.
-              </div>
-            )}
-            {user.role === "partner" && !!retailerIntros.length && (
-              <div style={{ marginTop: 12, borderTop: `1px solid ${BRAND.line}`, paddingTop: 10 }}>
-                {retailerIntros.map((i) => (
-                  <div key={i.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", flexWrap: "wrap" }}>
-                    <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{i.startup_name}</span>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
-                      <StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-        );
-      })}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              {user.role === "partner" && <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabelForPartner(r.status)} />}
+              {user.role === "startup" && <PrimaryButton icon={Send} onClick={() => onRequest(r)}>Request intro</PrimaryButton>}
+            </div>
+          </div>
+          {user.role === "partner" && r.status === "Rejected" && r.rejection_reason && (
+            <div style={{ fontFamily: FONT, fontSize: 12, color: BRAND.coralDark, background: "#FBEAEA", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
+              RIV's note: {r.rejection_reason}
+            </div>
+          )}
+          {user.role === "partner" && r.status === "Duplicate" && (
+            <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
+              This looks similar to a retailer already on file — RIV will review before approving.
+            </div>
+          )}
+        </Card>
+      ))}
     </div>
   );
 }
@@ -872,6 +1127,10 @@ function AddRetailerModal({ onClose, onCreated }) {
     finally { setBusy(false); }
   }
 
+  // item 9 (9 Oct 2026 batch) — every field required except phone.
+  const requiredFilled = form.name && form.brand && form.website && form.location
+    && form.hqCountry && form.category && form.contactName && form.contactDesignation && form.contactEmail;
+
   return (
     <Modal title="Add Retailer to RIV network" onClose={onClose} width={520}>
       <ErrorBanner text={error} />
@@ -879,16 +1138,16 @@ function AddRetailerModal({ onClose, onCreated }) {
         Submissions are reviewed by RIV before appearing in the approved directory.
       </div>
       <Field label="Retail enterprise you are referring" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-      <Field label="Brand you are introducing to"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
-      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
-      <Field label="City where enterprise is headquartered"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
-      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
-      <Field label="Retail segment"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
-      <Field label="Enterprise contact — full name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
-      <Field label="Enterprise contact — designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
-      <Field label="Enterprise contact — email"><input style={inputStyle} type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
-      <Field label="Enterprise contact — phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-      <PrimaryButton onClick={submit} disabled={busy || !form.name} style={{ width: "100%" }}>Submit for review</PrimaryButton>
+      <Field label="Brand you are introducing to" required><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
+      <Field label="Website" required><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="City where enterprise is headquartered" required><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+      <Field label="HQ country" required><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Retail segment" required><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+      <Field label="Enterprise contact — full name" required><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
+      <Field label="Enterprise contact — designation" required><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
+      <Field label="Enterprise contact — email" required><input style={inputStyle} type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
+      <Field label="Enterprise contact — phone" hint="Optional."><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+      <PrimaryButton onClick={submit} disabled={busy || !requiredFilled} style={{ width: "100%" }}>Submit for review</PrimaryButton>
     </Modal>
   );
 }
@@ -948,21 +1207,32 @@ function DealStatusCell({ intro, onSave }) {
   );
 }
 
+// 9 Oct 2026 batch, item 7 — Opportunity Value display with a $ prefix
+// (it's a USD figure, unlike every other amount in the app which is ₹ via
+// money()). No currency conversion here, just the symbol — the stored
+// number is shown as-is.
+function opportunityMoney(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  return `$${Number(n).toLocaleString("en-US")}`;
+}
 // Opportunity Value input — editable only once Introduction Status is
 // "Introduced" AND Deal Status isn't yet "Closed - Won" (PRD Tab 1 items
 // 9–10 / Tab 2 items 11–12); read-only display in every other case.
 function OpportunityValueCell({ intro, onSave }) {
   const editable = intro.status === "Introduced" && intro.engagement_stage !== "Closed - Won";
   if (!editable) {
-    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{money(intro.opportunity_value)}</span>;
+    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{opportunityMoney(intro.opportunity_value)}</span>;
   }
   return (
-    <input
-      style={{ ...inputStyle, minWidth: 130 }}
-      type="number"
-      defaultValue={intro.opportunity_value || ""}
-      onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
-    />
+    <div style={{ position: "relative", minWidth: 130 }}>
+      <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontFamily: FONT, fontSize: 13.5, color: "#9B958F", pointerEvents: "none" }}>$</span>
+      <input
+        style={{ ...inputStyle, paddingLeft: 22 }}
+        type="number"
+        defaultValue={intro.opportunity_value || ""}
+        onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
+      />
+    </div>
   );
 }
 
@@ -971,17 +1241,42 @@ function OpportunityValueCell({ intro, onSave }) {
 // (the startup can change its mind before RIV acts on it), and Admin's own
 // startupCommitStatus control keeps working alongside this as a phone/
 // email fallback — both write the same column.
+// item 14 fix (25 Sep 2026 batch): once the deal has reached a closed
+// engagement_stage, Commit Status becomes read-only ("N/A") — the backend
+// (PUT /introductions/:id/commit-status and admin's override) rejects a
+// write past this point too, this just keeps the control from even
+// offering it client-side.
+// 9 Oct 2026 batch, item 11 — selecting an option used to save immediately
+// on change, so a stray click could silently "freeze in" the wrong
+// status. Now the dropdown just holds a pending local selection; nothing
+// is written until the startup clicks Save, and the Save button only
+// appears once the selection actually differs from what's saved.
 function CommitStatusCell({ intro, onSave, busy }) {
+  const saved = intro.startup_commit_status || "";
+  const [pending, setPending] = useState(saved);
+  useEffect(() => { setPending(saved); }, [saved]);
+
+  if (["Closed - Won", "Closed - Lost", "Stalled"].includes(intro.engagement_stage)) {
+    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F" }}>N/A</span>;
+  }
+  const dirty = pending !== saved && pending !== "";
   return (
-    <select
-      style={{ ...inputStyle, minWidth: 170 }}
-      value={intro.startup_commit_status || ""}
-      disabled={busy}
-      onChange={(e) => e.target.value && onSave(e.target.value)}
-    >
-      <option value="">— Select —</option>
-      {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-    </select>
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <select
+        style={{ ...inputStyle, minWidth: 170 }}
+        value={pending}
+        disabled={busy}
+        onChange={(e) => setPending(e.target.value)}
+      >
+        <option value="">— Select —</option>
+        {COMMIT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+      {dirty && (
+        <PrimaryButton icon={CheckCircle2} disabled={busy} onClick={() => onSave(pending)} style={{ padding: "6px 10px", fontSize: 12 }}>
+          Save
+        </PrimaryButton>
+      )}
+    </div>
   );
 }
 
@@ -1019,6 +1314,10 @@ function RetailIntroductionsRequestedView({ refreshKey }) {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  // item 6 (25 Sep 2026 batch) — "View Details" opens the consolidated
+  // read-only modal (isAdmin={false}, no `user` passed — same shape as
+  // item 7's Partner Dashboard use).
+  const [detailIntro, setDetailIntro] = useState(null);
   const load = useCallback(
     () => api.getIntroductions("Startup").then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)),
     []
@@ -1043,7 +1342,7 @@ function RetailIntroductionsRequestedView({ refreshKey }) {
         Start a new introduction request from Retailer Directory.
       </div>
       <IntroTable
-        columns={["Retailer Name", "Requested Date", "RIV Approval Status", "Introduction Status", "Deal Status", "Opportunity Value"]}
+        columns={["Retailer Name", "Requested Date", "RIV Approval Status", "Introduction Status", "Deal Status", "Opportunity Value", ""]}
         rows={rows}
         emptyIcon={ClipboardList}
         emptyTitle={intros.length ? "No requests match your search" : "No introduction requests yet"}
@@ -1053,12 +1352,14 @@ function RetailIntroductionsRequestedView({ refreshKey }) {
             <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
             <td style={cellStyle}>{dateStr(i.request_date)}</td>
             <td style={cellStyle}><StatusBadge status={approvalStatusForStartup(i.approval_status)} colors={APPROVAL_COLORS} /></td>
-            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
+            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
             <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+            <td style={cellStyle}><GhostButton onClick={() => setDetailIntro(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
           </tr>
         )}
       />
+      {detailIntro && <IntroDetailModal intro={detailIntro} onClose={() => setDetailIntro(null)} isAdmin={false} />}
     </div>
   );
 }
@@ -1082,6 +1383,8 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [savingId, setSavingId] = useState(null);
+  // item 6 — same consolidated "View Details" modal as Tab 1 above.
+  const [detailIntro, setDetailIntro] = useState(null);
   const load = useCallback(
     () =>
       api.getIntroductions().then((r) => setIntros(r.introductions.filter((i) => i.initiated_by !== "Startup"))).catch((e) => setError(e.message)),
@@ -1112,7 +1415,7 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
       <ErrorBanner text={error} />
       <IntroSearchBar search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} />
       <IntroTable
-        columns={["Retailer Name", "Initiated Date", "Startup Commit Status", "Introduction Status", "Deal Status", "Opportunity Value"]}
+        columns={["Retailer Name", "Initiated Date", "Startup Commit Status", "Introduction Status", "Deal Status", "Opportunity Value", ""]}
         rows={rows}
         emptyIcon={Handshake}
         emptyTitle={intros.length ? "No opportunities match your search" : "No opportunities yet"}
@@ -1124,146 +1427,18 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
             <td style={cellStyle}>
               <CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} />
             </td>
-            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
+            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
             <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
             <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
+            <td style={cellStyle}><GhostButton onClick={() => setDetailIntro(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
           </tr>
         )}
       />
+      {detailIntro && <IntroDetailModal intro={detailIntro} onClose={() => setDetailIntro(null)} isAdmin={false} />}
     </div>
   );
 }
 
-// Read-only "View Details" modal, shared by both tabs. Tab 1 (item 12):
-// "the complete introduction request, including supporting documents."
-// Tab 2 (item 13): "the complete opportunity/request context and relevant
-// supporting documents." No actions here on purpose — both screens are
-// explicitly view-only for the startup beyond Deal Status/Opportunity
-// Value (Tab 1 & 2) and Commit Status (Tab 2), which are edited inline in
-// the table, not from this modal.
-function IntroViewDetailsModal({ intro, onClose, isAdmin }) {
-  const isRivInitiated = intro.initiated_by === "RIV Admin";
-  const rows = [
-    ["Retailer", intro.retailer_name],
-    ["Category", intro.retailer_category],
-    ["Network", intro.partner_name ? `via ${intro.partner_name}` : "RIV direct"],
-    [isRivInitiated ? "Initiated Date" : "Requested Date", dateStr(intro.request_date)],
-    ...(isRivInitiated ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
-    ["Actual Introduction status", introducedStatusFor(intro.status)],
-    ["Deal Status", intro.engagement_stage || "—"],
-    ["Opportunity Value", money(intro.opportunity_value)],
-    ...(isRivInitiated ? [["Startup Commit Status", intro.startup_commit_status || "Not yet responded"]] : []),
-    ["Last Updated", `${dateStr(intro.updated_at)}${intro.updated_by ? ` · ${intro.updated_by}` : ""}`],
-  ];
-  const requestRows = [
-    ["Why interested", intro.why_interested],
-    ["Problem solved for enterprise", intro.problem_solved],
-    ["Relevant product/offering", intro.relevant_offering],
-    ["Desired buyer persona", intro.buyer_persona],
-    ["Previously engaged", intro.previously_engaged === null ? null : (intro.previously_engaged ? "Yes" : "No")],
-    ["Prior engagement details", intro.prior_engagement_details],
-    // Pre-18-Sep-2026 rows only, from back when this was a free-text URL
-    // field — new submissions use the uploaded-file list rendered below.
-    ["Supporting material (link)", intro.supporting_material_url],
-    // Partner-originated ("Introduce Startup to Retailers", 18 Sep 2026).
-    ["Opportunity context", intro.gtm_context_note],
-    ["How the partner introduced this", intro.how_introduced],
-  ].filter(([, v]) => v);
-  const proofRows = [
-    ["Channel", intro.channel],
-    ["Introduction date", intro.introduction_date ? dateStr(intro.introduction_date) : null],
-    ["Proof of introduction", intro.proof_of_introduction],
-  ].filter(([, v]) => v);
-  const supportingMaterialFiles = intro.supporting_material || [];
-  const [fileError, setFileError] = useState("");
-  const [proofFileError, setProofFileError] = useState("");
-  function openFile(index) {
-    setFileError("");
-    const opener = isAdmin ? api.openSupportingMaterialAdmin : api.openSupportingMaterial;
-    opener(intro.id, index).catch((e) => setFileError(e.message));
-  }
-  function openProofFile() {
-    setProofFileError("");
-    const opener = isAdmin ? api.openProofAttachmentAdmin : api.openProofAttachment;
-    opener(intro.id).catch((e) => setProofFileError(e.message));
-  }
-
-  return (
-    <Modal title={intro.retailer_name} onClose={onClose} width={560}>
-      {rows.map(([label, value]) => (
-        <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: `1px solid ${BRAND.line}` }}>
-          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>{label}</div>
-          <div style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, color: BRAND.ink, textAlign: "right" }}>{value}</div>
-        </div>
-      ))}
-
-      {!!requestRows.length && (
-        <div style={{ marginTop: 18 }}>
-          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>
-            {isRivInitiated ? "Opportunity context" : "Original request"}
-          </div>
-          {requestRows.map(([label, value]) => (
-            <div key={label} style={{ marginBottom: 12 }}>
-              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 }}>{label}</div>
-              <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{value}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {!!proofRows.length && (
-        <div style={{ marginTop: 18 }}>
-          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>Supporting documents</div>
-          {proofRows.map(([label, value]) => (
-            <div key={label} style={{ marginBottom: 12 }}>
-              <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 }}>{label}</div>
-              <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{value}</div>
-            </div>
-          ))}
-          {intro.proof_attachment && (
-            <button
-              type="button"
-              onClick={openProofFile}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
-                background: "none", border: `1px solid ${BRAND.line}`, borderRadius: 9, padding: "8px 10px",
-                cursor: "pointer", fontFamily: FONT, fontSize: 12.5, color: BRAND.coral,
-              }}
-            >
-              <Paperclip size={13} /> {intro.proof_attachment.name}
-            </button>
-          )}
-          {proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 6 }}>{proofFileError}</div>}
-        </div>
-      )}
-
-      {!!supportingMaterialFiles.length && (
-        <div style={{ marginTop: 18 }}>
-          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, marginBottom: 10 }}>Supporting material</div>
-          {fileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginBottom: 8 }}>{fileError}</div>}
-          {supportingMaterialFiles.map((file, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => openFile(i)}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
-                background: "none", border: `1px solid ${BRAND.line}`, borderRadius: 9, padding: "8px 10px",
-                marginBottom: 6, cursor: "pointer", fontFamily: FONT, fontSize: 12.5, color: BRAND.coral,
-              }}
-            >
-              <Paperclip size={13} /> {file.name}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {!requestRows.length && !proofRows.length && !supportingMaterialFiles.length && (
-        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F", marginTop: 14 }}>No supporting documents on file yet.</div>
-      )}
-    </Modal>
-  );
-}
 
 // GTM Partner's "Introduce Startup to Retailers" tab (18 Sep 2026
 // feedback, replaces the old read-only "Introduction Requests" tab). Two
@@ -1306,8 +1481,15 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
     api.getStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message));
   }, []);
 
+  // item 2b (25 Sep 2026 batch) — unified activity feed: every
+  // introduction tied to this partner regardless of who initiated it.
+  // GET /introductions with no ?initiatedBy filter already scopes to
+  // `i.partner_id = <this partner>` server-side (see portal.js) and
+  // returns Startup-/GTM Partner-/RIV Admin-initiated rows alike — this
+  // used to pass "GTM Partner" here, which hid every pairing this partner
+  // didn't originate themselves.
   useEffect(() => {
-    api.getIntroductions("GTM Partner").then((r) => setMine(r.introductions)).catch((e) => setError(e.message));
+    api.getIntroductions().then((r) => setMine(r.introductions)).catch((e) => setError(e.message));
   }, [refreshKey]);
 
   async function submit() {
@@ -1360,17 +1542,31 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
         </PrimaryButton>
       </Card>
 
+      {/* item 2b — unified feed heading, distinct from the form above
+          (which only ever creates GTM-Partner-initiated rows). */}
+      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink, marginBottom: 4 }}>All introductions in your network</div>
+      <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 10 }}>
+        Every pairing tied to you — whichever side started it.
+      </div>
       {!mine ? <Spinner /> : !mine.length ? (
-        <EmptyState icon={Handshake} title="No interest checks yet" text="Pairings you propose here will show up below with their status." />
+        <EmptyState icon={Handshake} title="No introductions yet" text="Pairings you propose, RIV routes to you, or a startup requests against your network will show up below." />
       ) : mine.map((i) => (
         <Card key={i.id} onClick={() => onOpen(i)} style={{ padding: 16, marginBottom: 10, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{i.startup_name} <ArrowRight size={12} style={{ margin: "0 4px", verticalAlign: "middle" }} /> {i.retailer_name}</div>
-            <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>Requested {dateStr(i.request_date)}</div>
+            <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>Requested {dateStr(i.request_date)} · Initiated by: {initiatorLabel(i.initiated_by)}</div>
+            {/* item 13b — duplicate note in the partner's own feed. Only
+                ever set on Startup-initiated rows (a GTM-partner-initiated
+                duplicate is blocked outright at submission — see the 409
+                in portal.js), but check generically in case that changes. */}
+            {i.duplicate_of_introduction_id && (
+              <div style={{ fontFamily: FONT, fontSize: 11, color: "#8A6D00", marginTop: 4 }}>
+                Possible duplicate — already in the pipeline since {dateStr(i.duplicate_of_request_date)}.
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
-            <StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} />
+            <StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
           </div>
         </Card>
       ))}
@@ -1521,6 +1717,8 @@ function IntroduceStartupToRetailersView({ refreshKey, onOpen, onCreated }) {
 function PartnerDashboardView({ refreshKey }) {
   const [intros, setIntros] = useState(null);
   const [error, setError] = useState("");
+  // item 7 — "View Details" opens the consolidated read-only modal.
+  const [detailIntro, setDetailIntro] = useState(null);
   useEffect(() => { api.getIntroductions().then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)); }, [refreshKey]);
   if (error) return <ErrorBanner text={error} />;
   if (!intros) return <Spinner />;
@@ -1532,32 +1730,81 @@ function PartnerDashboardView({ refreshKey }) {
     return null; // not yet locked — nothing to show until a figure exists
   }
 
+  // item 16 — summary strip: active introductions, closed-won count, and
+  // total expected GTM success fee for closed-won deals for this partner.
+  // "Active" mirrors AdminPartnersView's own definition (item 11): not
+  // Rejected, not a closed/dead status.
+  const CLOSED_STATUSES = ["Closed - Won", "Closed - Lost", "Stalled", "Invoiced", "Paid", "Payout Complete"];
+  const activeCount = intros.filter((i) => i.approval_status !== "Rejected" && !CLOSED_STATUSES.includes(i.status)).length;
+  const closedWonCount = intros.filter((i) => i.engagement_stage === "Closed - Won").length;
+  const totalExpectedFee = intros
+    .filter((i) => i.engagement_stage === "Closed - Won" && i.initiated_by === "GTM Partner" && i.partner_fee_amount != null)
+    .reduce((sum, i) => sum + Number(i.partner_fee_amount), 0);
+
   return (
-    <IntroTable
-      columns={["Retailer", "Startup", "Introduction interest status", "Actual Introduction status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee"]}
-      rows={intros}
-      emptyIcon={Handshake}
-      emptyTitle="No introductions yet"
-      emptyText="Introductions you originate or that RIV routes to you will appear here."
-      renderRow={(i) => (
-        <tr key={i.id}>
-          <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
-          <td style={cellStyle}>{i.startup_name}</td>
-          <td style={cellStyle}><StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} /></td>
-          <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} /></td>
-          <td style={cellStyle}>{i.engagement_stage ? <StatusBadge status={i.engagement_stage} colors={DEAL_STATUS_COLORS} /> : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
-          <td style={cellStyle}>{money(i.opportunity_value)}</td>
-          <td style={cellStyle}>{expectedFee(i) != null ? usdFee(expectedFee(i)) : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
-        </tr>
-      )}
-    />
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>Active introductions</div>
+          <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: BRAND.ink, marginTop: 4 }}>{activeCount}</div>
+        </Card>
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>Closed – Won</div>
+          <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#1E7A34", marginTop: 4 }}>{closedWonCount}</div>
+        </Card>
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>Expected GTM Success Fee (Closed – Won)</div>
+          <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#1E7A34", marginTop: 4 }}>{usdFee(totalExpectedFee)}</div>
+        </Card>
+      </div>
+      <IntroTable
+        columns={["Retailer", "Startup", "Initiated by", "Actual Introduction status", "Deal Status", "Opportunity Value", "Expected GTM Success Fee", ""]}
+        rows={intros}
+        emptyIcon={Handshake}
+        emptyTitle="No introductions yet"
+        emptyText="Introductions you originate or that RIV routes to you will appear here."
+        renderRow={(i) => (
+          <tr key={i.id}>
+            <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
+            <td style={cellStyle}>{i.startup_name}</td>
+            <td style={cellStyle}>{initiatorLabel(i.initiated_by)}</td>
+            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
+            <td style={cellStyle}>{i.engagement_stage ? <StatusBadge status={i.engagement_stage} colors={DEAL_STATUS_COLORS} /> : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
+            <td style={cellStyle}>{opportunityMoney(i.opportunity_value)}</td>
+            <td style={cellStyle}>{expectedFee(i) != null ? usdFee(expectedFee(i)) : <span style={{ color: "#B7B2AE" }}>—</span>}</td>
+            <td style={cellStyle}><GhostButton onClick={() => setDetailIntro(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
+          </tr>
+        )}
+      />
+      {detailIntro && <IntroDetailModal intro={detailIntro} onClose={() => setDetailIntro(null)} isAdmin={false} />}
+    </div>
   );
 }
 
 /* =========================================================================
    ADMIN VIEWS
    ========================================================================= */
-function AdminOverview() {
+// item 10 (25 Sep 2026 batch) — one "Needs your attention" tile. Clickable
+// when onNavigate is given (switches the admin nav's active tab); still
+// shows the labeled count either way, per the task's fallback instruction.
+function AttentionTile({ label, value, onClick }) {
+  const Tag = onClick ? "button" : "div";
+  return (
+    <Tag
+      onClick={onClick}
+      type={onClick ? "button" : undefined}
+      style={{
+        display: "block", textAlign: "left", width: "100%", padding: 16, borderRadius: 14,
+        border: `1px solid ${BRAND.line}`, background: "#fff", cursor: onClick ? "pointer" : "default", fontFamily: FONT,
+      }}
+    >
+      <div style={{ fontWeight: 700, fontSize: 22, color: BRAND.coral }}>{value}</div>
+      <div style={{ fontSize: 12, color: "#9B958F", marginTop: 4 }}>{label}</div>
+    </Tag>
+  );
+}
+
+function AdminOverview({ onNavigate }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => { api.getSummary().then(setSummary).catch((e) => setError(e.message)); }, []);
@@ -1568,6 +1815,17 @@ function AdminOverview() {
     { label: "Startups", value: summary.counts.startups, icon: Briefcase },
     { label: "Retailers", value: summary.counts.retailers, icon: Building2 },
     { label: "Introductions", value: summary.counts.introductions, icon: Handshake },
+  ];
+  const needsAttention = summary.needsAttention || {};
+  // item 10 — "Introductions by initiator", replacing the old raw "By
+  // status" breakdown below. initiatorCounts comes back as one row per
+  // distinct initiated_by value actually present in the data, so missing
+  // values (e.g. no RIV-initiated intros yet) default to 0 here.
+  const initiatorMap = Object.fromEntries((summary.initiatorCounts || []).map((r) => [r.initiated_by, r.count]));
+  const initiatorRows = [
+    ["Startup", initiatorMap["Startup"] || 0],
+    ["GTM Partner", initiatorMap["GTM Partner"] || 0],
+    ["RIV", initiatorMap["RIV Admin"] || 0],
   ];
   return (
     <div>
@@ -1580,6 +1838,14 @@ function AdminOverview() {
           </Card>
         ))}
       </div>
+
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 13, color: BRAND.ink, marginBottom: 10 }}>Needs your attention</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
+        <AttentionTile label="Pending retailer approvals" value={needsAttention.pending_retailer_approvals || 0} onClick={onNavigate ? () => onNavigate("retailers") : undefined} />
+        <AttentionTile label="Introductions pending RIV approval" value={needsAttention.introductions_pending_riv_approval || 0} onClick={onNavigate ? () => onNavigate("introductions") : undefined} />
+        <AttentionTile label="Awaiting startup response (GTM Notified)" value={needsAttention.introductions_awaiting_startup_response || 0} onClick={onNavigate ? () => onNavigate("introductions") : undefined} />
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
         <Card style={{ padding: 16 }}>
           <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>Fees earned</div>
@@ -1594,11 +1860,11 @@ function AdminOverview() {
           <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 18, color: BRAND.ink, marginTop: 4 }}>{summary.pipeline.active_in_flight}</div>
         </Card>
       </div>
-      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 13, color: BRAND.ink, marginBottom: 10 }}>By status</div>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 13, color: BRAND.ink, marginBottom: 10 }}>Introductions by initiator</div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        {summary.statusCounts.map((s) => (
-          <div key={s.status} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1px solid ${BRAND.line}`, borderRadius: 10 }}>
-            <StatusBadge status={s.status} /> <span style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 600 }}>{s.count}</span>
+        {initiatorRows.map(([label, count]) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1px solid ${BRAND.line}`, borderRadius: 10 }}>
+            <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F" }}>{label}</span> <span style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 600 }}>{count}</span>
           </div>
         ))}
       </div>
@@ -1606,31 +1872,109 @@ function AdminOverview() {
   );
 }
 
+// 9 Oct 2026 batch, item 2 — full admin edit for a GTM partner: every
+// field the backend's PUT /admin/partners/:id already accepts (see
+// admin.js), including the commission/rate override fields RIV needs as
+// final decision-maker. Email is intentionally excluded — the backend
+// route doesn't update it (it's tied to the provisioned login), so it's
+// shown read-only here rather than offered as an editable field that
+// would silently do nothing.
+function EditPartnerModal({ partner, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    fullName: partner.full_name || "", company: partner.company || "", phone: partner.phone || "",
+    linkedinUrl: partner.linkedin_url || "", region: partner.region || "",
+    onboardingStage: partner.onboarding_stage || "New", agreementLink: partner.agreement_link || "",
+    agreementSignedDate: partner.agreement_signed_date ? partner.agreement_signed_date.slice(0, 10) : "",
+    defaultPayoutSplit: partner.default_payout_split ?? "", revenueShareOverride: partner.revenue_share_override ?? "",
+    riv_owner: partner.riv_owner || "", status: partner.status || "Active", notes: partner.notes || "",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updatePartner(partner.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${partner.full_name}`} onClose={onClose} width={520}>
+      <ErrorBanner text={error} />
+      <Field label="Email" hint="Login email — change by re-provisioning.">
+        <input style={{ ...inputStyle, color: "#9B958F" }} value={partner.email} disabled />
+      </Field>
+      <Field label="Full name"><input style={inputStyle} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
+      <Field label="Company"><input style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} /></Field>
+      <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="LinkedIn URL"><input style={inputStyle} value={form.linkedinUrl} onChange={(e) => setForm({ ...form, linkedinUrl: e.target.value })} /></Field>
+      <Field label="Region"><input style={inputStyle} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></Field>
+      <Field label="Onboarding stage">
+        <select style={inputStyle} value={form.onboardingStage} onChange={(e) => setForm({ ...form, onboardingStage: e.target.value })}>
+          <option>New</option><option>Agreement Sent</option><option>Signed</option><option>Onboarded</option>
+        </select>
+      </Field>
+      <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
+      <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
+      <Field label="Default payout split (%)"><input style={inputStyle} type="number" step="0.1" value={form.defaultPayoutSplit} onChange={(e) => setForm({ ...form, defaultPayoutSplit: e.target.value })} /></Field>
+      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
+        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
+      </Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active</option><option>Inactive</option>
+        </select>
+      </Field>
+      <Field label="Notes"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.fullName} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
+  );
+}
+
 function AdminPartnersView() {
   const [partners, setPartners] = useState(null);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ fullName: "", company: "", email: "", phone: "", region: "" });
   const [provisioning, setProvisioning] = useState(null);
   const [pwField, setPwField] = useState("");
+  // item 13 — guards against a double-click/double-submit on Provision
+  // firing two overlapping POSTs before the first one's response (and the
+  // resulting portal_login_status flip) comes back and hides the button.
+  const [provisionBusy, setProvisionBusy] = useState(false);
+  const [editingPartner, setEditingPartner] = useState(null);
 
   const load = useCallback(() => api.listPartners().then((r) => setPartners(r.partners)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
   async function createPartner() {
     setError("");
-    try { await api.createPartner(form); setShowNew(false); setForm({ fullName: "", company: "", email: "", phone: "", region: "" }); load(); }
+    try {
+      await api.createPartner(form);
+      setShowNew(false);
+      setForm({ fullName: "", company: "", email: "", phone: "", region: "" });
+      load();
+      showSuccess(`${form.fullName} was added as a new GTM partner.`);
+    }
     catch (e) { setError(e.message); }
   }
   async function provision(p) {
-    setError("");
-    try { await api.provisionPartnerLogin(p.id, pwField); setProvisioning(null); setPwField(""); load(); }
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionPartnerLogin(p.id, pwField); setProvisioning(null); setPwField(""); await load(); }
     catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
   }
 
   if (error) return <ErrorBanner text={error} />;
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New partner</PrimaryButton>
       </div>
@@ -1642,15 +1986,25 @@ function AdminPartnersView() {
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{p.full_name}</div>
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{p.email} · {p.company || "—"} · {p.region || "—"}</div>
             <div style={{ fontFamily: FONT, fontSize: 11, color: "#B7B2AE", marginTop: 5 }}>Payout split {p.default_payout_split}% · Stage: {p.onboarding_stage} · Login: {p.portal_login_status}</div>
+            {/* item 11 (25 Sep 2026 batch) — inline metrics from GET
+                /admin/partners' new aggregate subqueries (admin.js). */}
+            <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#7A756F", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <span>{p.retailer_count ?? 0} retailer{p.retailer_count === 1 ? "" : "s"} in network</span>
+              <span>{p.active_introduction_count ?? 0} active introduction{p.active_introduction_count === 1 ? "" : "s"}</span>
+              <span>{money(p.fees_earned)} fees earned</span>
+            </div>
           </div>
-          {p.portal_login_status !== "Provisioned" && (
-            provisioning === p.id ? (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8}>Provision</PrimaryButton>
-              </div>
-            ) : <GhostButton onClick={() => setProvisioning(p.id)}>Provision login</GhostButton>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <GhostButton onClick={() => setEditingPartner(p)}>Edit</GhostButton>
+            {p.portal_login_status !== "Provisioned" && (
+              provisioning === p.id ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
+                  <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
+                </div>
+              ) : <GhostButton onClick={() => setProvisioning(p.id)}>Provision login</GhostButton>
+            )}
+          </div>
         </Card>
       ))}
       {showNew && (
@@ -1664,13 +2018,126 @@ function AdminPartnersView() {
           <PrimaryButton onClick={createPartner} disabled={!form.fullName || !form.email} style={{ width: "100%" }}>Create partner</PrimaryButton>
         </Modal>
       )}
+      {editingPartner && (
+        <EditPartnerModal partner={editingPartner} onClose={() => setEditingPartner(null)} onSaved={load} />
+      )}
     </div>
+  );
+}
+
+// 9 Oct 2026 batch, item 2 — full admin edit for a RISE startup, covering
+// every field the backend's PUT /admin/startups/:id accepts (admin.js),
+// including the commission (revenue share) override and the fee/equity
+// onboarding fields — RIV admin is the final decision-maker on all of
+// these, not just the basics shown on the card. Email is read-only here
+// for the same reason as EditPartnerModal.
+function EditStartupModal({ startup, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    startupName: startup.startup_name || "", founderName: startup.founder_name || "", phone: startup.phone || "",
+    sector: startup.sector || "", solutionSummary: startup.solution_summary || "",
+    onboardingStage: startup.onboarding_stage || "New", agreementLink: startup.agreement_link || "",
+    agreementSignedDate: startup.agreement_signed_date ? startup.agreement_signed_date.slice(0, 10) : "",
+    participationFeeStatus: startup.participation_fee_status || "Pending",
+    participationFeeDueDate: startup.participation_fee_due_date ? startup.participation_fee_due_date.slice(0, 10) : "",
+    equityPct: startup.equity_pct ?? "", revenueShareOverride: startup.revenue_share_override ?? "",
+    riv_owner: startup.riv_owner || "", status: startup.status || "Active", notes: startup.notes || "",
+    legalEntity: startup.legal_entity || "", website: startup.website || "", city: startup.city || "",
+    hqCountry: startup.hq_country || "", yearIncorporated: startup.year_incorporated || "",
+    foundingTeamDetails: startup.founding_team_details || "",
+    problemDescription: startup.problem_description || "", solutionDescription: startup.solution_description || "",
+    topBenefits: startup.top_benefits || "", techStack: startup.tech_stack || "", subVertical: startup.sub_vertical || "",
+    competition: startup.competition || "", competitiveAdvantage: startup.competitive_advantage || "",
+    payingCustomerCount: startup.paying_customer_count || "", notableCustomers: startup.notable_customers || "",
+    keyMilestones: startup.key_milestones || "", pastFundRaised: startup.past_fund_raised || "",
+    currentlyRaisingCapital: startup.currently_raising_capital || "", fundraisingSupportInterest: startup.fundraising_support_interest || "",
+    additionalNotes: startup.additional_notes || "",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updateStartup(startup.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride, equityPct: form.equityPct === "" ? null : form.equityPct });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${startup.startup_name}`} onClose={onClose} width={560}>
+      <ErrorBanner text={error} />
+      <Field label="Email" hint="Login email — change by re-provisioning."><input style={{ ...inputStyle, color: "#9B958F" }} value={startup.email} disabled /></Field>
+      <Field label="Startup name"><input style={inputStyle} value={form.startupName} onChange={(e) => setForm({ ...form, startupName: e.target.value })} /></Field>
+      <Field label="Founder name"><input style={inputStyle} value={form.founderName} onChange={(e) => setForm({ ...form, founderName: e.target.value })} /></Field>
+      <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="Sector"><input style={inputStyle} value={form.sector} onChange={(e) => setForm({ ...form, sector: e.target.value })} /></Field>
+      <Field label="Solution summary"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.solutionSummary} onChange={(e) => setForm({ ...form, solutionSummary: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>Onboarding &amp; commercial terms</div>
+      <Field label="Onboarding stage">
+        <select style={inputStyle} value={form.onboardingStage} onChange={(e) => setForm({ ...form, onboardingStage: e.target.value })}>
+          <option>New</option><option>Agreement Sent</option><option>Signed</option><option>Onboarded</option>
+        </select>
+      </Field>
+      <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
+      <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
+      <Field label="Participation fee status">
+        <select style={inputStyle} value={form.participationFeeStatus} onChange={(e) => setForm({ ...form, participationFeeStatus: e.target.value })}>
+          <option>Pending</option><option>Paid</option>
+        </select>
+      </Field>
+      <Field label="Participation fee due date"><input style={inputStyle} type="date" value={form.participationFeeDueDate} onChange={(e) => setForm({ ...form, participationFeeDueDate: e.target.value })} /></Field>
+      <Field label="Equity (%)"><input style={inputStyle} type="number" step="0.01" value={form.equityPct} onChange={(e) => setForm({ ...form, equityPct: e.target.value })} /></Field>
+      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
+        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
+      </Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active</option><option>Inactive</option>
+        </select>
+      </Field>
+      <Field label="Internal notes"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>RISE GTM Application Form fields</div>
+      <Field label="Legal entity"><input style={inputStyle} value={form.legalEntity} onChange={(e) => setForm({ ...form, legalEntity: e.target.value })} /></Field>
+      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="City"><input style={inputStyle} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Field>
+      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Year incorporated"><input style={inputStyle} value={form.yearIncorporated} onChange={(e) => setForm({ ...form, yearIncorporated: e.target.value })} /></Field>
+      <Field label="Founding team details / qualifications"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.foundingTeamDetails} onChange={(e) => setForm({ ...form, foundingTeamDetails: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>Startup Detail View fields</div>
+      <Field label="Problem description"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.problemDescription} onChange={(e) => setForm({ ...form, problemDescription: e.target.value })} /></Field>
+      <Field label="Solution"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.solutionDescription} onChange={(e) => setForm({ ...form, solutionDescription: e.target.value })} /></Field>
+      <Field label="Top 3 benefits"><input style={inputStyle} value={form.topBenefits} onChange={(e) => setForm({ ...form, topBenefits: e.target.value })} /></Field>
+      <Field label="Tech stack"><input style={inputStyle} value={form.techStack} onChange={(e) => setForm({ ...form, techStack: e.target.value })} /></Field>
+      <Field label="Sub-vertical"><input style={inputStyle} value={form.subVertical} onChange={(e) => setForm({ ...form, subVertical: e.target.value })} /></Field>
+      <Field label="Competition"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.competition} onChange={(e) => setForm({ ...form, competition: e.target.value })} /></Field>
+      <Field label="Competitive advantage"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.competitiveAdvantage} onChange={(e) => setForm({ ...form, competitiveAdvantage: e.target.value })} /></Field>
+      <Field label="Paying customer count"><input style={inputStyle} value={form.payingCustomerCount} onChange={(e) => setForm({ ...form, payingCustomerCount: e.target.value })} /></Field>
+      <Field label="Notable customers"><input style={inputStyle} value={form.notableCustomers} onChange={(e) => setForm({ ...form, notableCustomers: e.target.value })} /></Field>
+      <Field label="Key milestones"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.keyMilestones} onChange={(e) => setForm({ ...form, keyMilestones: e.target.value })} /></Field>
+      <Field label="Past fund raised"><input style={inputStyle} value={form.pastFundRaised} onChange={(e) => setForm({ ...form, pastFundRaised: e.target.value })} /></Field>
+      <Field label="Currently raising capital?">
+        <select style={inputStyle} value={form.currentlyRaisingCapital} onChange={(e) => setForm({ ...form, currentlyRaisingCapital: e.target.value })}>
+          <option value="">— None —</option><option>Yes</option><option>No</option>
+        </select>
+      </Field>
+      <Field label="Interested in fundraising support from RIV?">
+        <select style={inputStyle} value={form.fundraisingSupportInterest} onChange={(e) => setForm({ ...form, fundraisingSupportInterest: e.target.value })}>
+          <option value="">— None —</option><option>Yes</option><option>No</option>
+        </select>
+      </Field>
+      <Field label="Anything else"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.additionalNotes} onChange={(e) => setForm({ ...form, additionalNotes: e.target.value })} /></Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.startupName} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
   );
 }
 
 function AdminStartupsView() {
   const [startups, setStartups] = useState(null);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const blankForm = {
     startupName: "", founderName: "", email: "", sector: "", solutionSummary: "",
@@ -1682,25 +2149,36 @@ function AdminStartupsView() {
   const [form, setForm] = useState(blankForm);
   const [provisioning, setProvisioning] = useState(null);
   const [pwField, setPwField] = useState("");
+  const [provisionBusy, setProvisionBusy] = useState(false); // item 13
   const [detailStartupId, setDetailStartupId] = useState(null);
+  const [editingStartup, setEditingStartup] = useState(null);
 
   const load = useCallback(() => api.listStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
   async function createStartup() {
     setError("");
-    try { await api.createStartup(form); setShowNew(false); setForm(blankForm); load(); }
+    try {
+      await api.createStartup(form);
+      setShowNew(false);
+      setForm(blankForm);
+      load();
+      showSuccess(`${form.startupName} was added as a new RISE startup.`);
+    }
     catch (e) { setError(e.message); }
   }
   async function provision(s) {
-    setError("");
-    try { await api.provisionStartupLogin(s.id, pwField); setProvisioning(null); setPwField(""); load(); }
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionStartupLogin(s.id, pwField); setProvisioning(null); setPwField(""); await load(); }
     catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
   }
 
   if (error) return <ErrorBanner text={error} />;
   return (
     <div>
+      <SuccessBanner text={success} />
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New startup</PrimaryButton>
       </div>
@@ -1712,14 +2190,22 @@ function AdminStartupsView() {
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{s.startup_name}</div>
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{s.email} · {s.sector || "—"}</div>
             <div style={{ fontFamily: FONT, fontSize: 11, color: "#B7B2AE", marginTop: 5 }}>Stage: {s.onboarding_stage} · Fee: {s.participation_fee_status} · Login: {s.portal_login_status}</div>
+            {/* item 12 (25 Sep 2026 batch) — inline metrics from GET
+                /admin/startups' new aggregate subqueries (admin.js). */}
+            <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#7A756F", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <span>{s.active_introduction_count ?? 0} active introduction{s.active_introduction_count === 1 ? "" : "s"}</span>
+              <span>{s.closed_won_count ?? 0} closed – won</span>
+              <span>{opportunityMoney(s.total_opportunity_value)} total opportunity value</span>
+            </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <GhostButton onClick={() => setDetailStartupId(s.id)}>View Details</GhostButton>
+            <GhostButton onClick={() => setEditingStartup(s)}>Edit</GhostButton>
             {s.portal_login_status !== "Provisioned" && (
               provisioning === s.id ? (
                 <div style={{ display: "flex", gap: 8 }}>
                   <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8}>Provision</PrimaryButton>
+                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Provisioning…" : "Provision"}</PrimaryButton>
                 </div>
               ) : <GhostButton onClick={() => setProvisioning(s.id)}>Provision login</GhostButton>
             )}
@@ -1768,6 +2254,7 @@ function AdminStartupsView() {
         </Modal>
       )}
       {detailStartupId && <StartupDetailModal startupId={detailStartupId} onClose={() => setDetailStartupId(null)} />}
+      {editingStartup && <EditStartupModal startup={editingStartup} onClose={() => setEditingStartup(null)} onSaved={load} />}
     </div>
   );
 }
@@ -1792,12 +2279,89 @@ function RejectRetailerRow({ onReject }) {
   );
 }
 
+// item 4 (25 Sep 2026 batch) tabs — filters the same retailer list by
+// network_source; "All" shows everything.
+const ADMIN_RETAILER_TABS = [
+  { id: "GTM Partner", label: "GTM Partner Network" },
+  { id: "RIV Direct", label: "RIV Direct" },
+  { id: "All", label: "All" },
+];
+// 9 Oct 2026 batch, item 2 — full admin edit for a retailer, every field
+// PUT /admin/retailers/:id accepts, including network source / GTM partner
+// and status, so RIV admin can correct anything as final decision-maker.
+function EditRetailerModal({ retailer, partners, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: retailer.name || "", brand: retailer.brand || "", website: retailer.website || "",
+    hqCountry: retailer.hq_country || "", category: retailer.category || "", location: retailer.location || "",
+    networkSource: retailer.network_source || "RIV Direct", owningPartnerId: retailer.owning_partner_id || "",
+    contactName: retailer.contact_name || "", contactDesignation: retailer.contact_designation || "",
+    contactEmail: retailer.contact_email || "", contactPhone: retailer.contact_phone || "",
+    riv_owner: retailer.riv_owner || "", status: retailer.status || "Active in network",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
+
+  async function save() {
+    setError(""); setBusy(true);
+    try {
+      await api.updateRetailer(retailer.id, { ...form, owningPartnerId: form.owningPartnerId || null });
+      await onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Edit ${retailer.brand || retailer.name}`} onClose={onClose} width={520}>
+      <ErrorBanner text={error} />
+      <Field label="Name" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+      <Field label="Brand"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
+      <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
+      <Field label="Category"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+      <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
+      <Field label="Network source">
+        <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
+          <option>RIV Direct</option><option>GTM Partner</option>
+        </select>
+      </Field>
+      {/* item 8 — relabeled "GTM partner" (was "Owning partner"), required
+          whenever a retailer sits in a GTM partner's network. */}
+      {form.networkSource === "GTM Partner" && (
+        <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
+          <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
+            <option value="">Select…</option>
+            {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Contact name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
+      <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
+      <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
+      <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+      <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
+      <Field label="Status">
+        <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option>Active in network</option><option>Prospect</option><option>In Process</option><option>Duplicate</option><option>Rejected</option>
+        </select>
+      </Field>
+      <PrimaryButton onClick={save} disabled={busy || !form.name || gtmPartnerMissing} style={{ width: "100%" }}>Save changes</PrimaryButton>
+    </Modal>
+  );
+}
+
 function AdminRetailersView() {
   const [retailers, setRetailers] = useState(null);
   const [partners, setPartners] = useState([]);
   const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
+  const [tab, setTab] = useState("All");
   const [form, setForm] = useState({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
+  const [editingRetailer, setEditingRetailer] = useState(null);
+  // item 8 — GTM partner is mandatory once Network source is "GTM Partner".
+  const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
 
   const load = useCallback(() => api.listRetailersAdmin().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); api.listPartners().then((r) => setPartners(r.partners)).catch(() => {}); }, [load]);
@@ -1809,6 +2373,7 @@ function AdminRetailersView() {
       setShowNew(false);
       setForm({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
       load();
+      showSuccess(`${form.brand || form.name} was added as a new retailer.`);
     } catch (e) { setError(e.message); }
   }
   async function approve(id) {
@@ -1828,14 +2393,28 @@ function AdminRetailersView() {
   }
 
   if (error) return <ErrorBanner text={error} />;
+  const visibleRetailers = (retailers || []).filter((r) => tab === "All" || r.network_source === tab);
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+      <SuccessBanner text={success} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", gap: 4 }}>
+          {ADMIN_RETAILER_TABS.map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)} style={{
+              fontFamily: FONT, fontWeight: 600, fontSize: 12.5, padding: "8px 12px", borderRadius: 8,
+              border: "none", cursor: "pointer",
+              background: tab === t.id ? BRAND.cream : "transparent",
+              color: tab === t.id ? BRAND.coral : "#7A756F",
+            }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New retailer</PrimaryButton>
       </div>
-      {!retailers ? <Spinner /> : !retailers.length ? (
-        <EmptyState icon={Building2} title="No retailers yet" text="Add a retailer to build out the directory." />
-      ) : retailers.map((r) => (
+      {!retailers ? <Spinner /> : !visibleRetailers.length ? (
+        <EmptyState icon={Building2} title="No retailers here" text="Add a retailer to build out the directory." />
+      ) : visibleRetailers.map((r) => (
         <Card key={r.id} style={{ padding: 16, marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
             <div>
@@ -1847,7 +2426,8 @@ function AdminRetailersView() {
               )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-              <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabel(r.status)} />
+              <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabelForAdmin(r.status)} />
+              <GhostButton onClick={() => setEditingRetailer(r)}>Edit</GhostButton>
               {["Prospect", "Duplicate"].includes(r.status) && <GhostButton onClick={() => markInProcess(r.id)}>Mark In Process</GhostButton>}
               {r.status !== "Active in network" && r.status !== "Rejected" && <PrimaryButton onClick={() => approve(r.id)}>Approve</PrimaryButton>}
             </div>
@@ -1872,12 +2452,15 @@ function AdminRetailersView() {
           <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
           <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
           <Field label="Network source">
-            <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value })}>
+            <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
               <option>RIV Direct</option><option>GTM Partner</option>
             </select>
           </Field>
+          {/* item 8 (9 Oct 2026 batch) — relabeled "GTM partner" (was
+              "Owning partner") and made required whenever a retailer is
+              being added to a GTM partner's network, not just optional. */}
           {form.networkSource === "GTM Partner" && (
-            <Field label="Owning partner">
+            <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
               <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
                 <option value="">Select…</option>
                 {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
@@ -1888,17 +2471,37 @@ function AdminRetailersView() {
           <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
           <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
           <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-          <PrimaryButton onClick={createRetailer} disabled={!form.name} style={{ width: "100%" }}>Create retailer</PrimaryButton>
+          <PrimaryButton onClick={createRetailer} disabled={!form.name || gtmPartnerMissing} style={{ width: "100%" }}>Create retailer</PrimaryButton>
         </Modal>
+      )}
+      {editingRetailer && (
+        <EditRetailerModal retailer={editingRetailer} partners={partners} onClose={() => setEditingRetailer(null)} onSaved={load} />
       )}
     </div>
   );
+}
+
+// item 3 (25 Sep 2026 batch) tabs — same visual pattern as
+// AdminRetailersView's ADMIN_RETAILER_TABS/tab strip above, filtering the
+// same introductions list by initiated_by instead of network_source.
+const ADMIN_INTRO_TABS = [
+  { id: "Startup", label: "Requested by Startup" },
+  { id: "GTM Partner", label: "Proposed by GTM Partner" },
+  { id: "RIV Admin", label: "Initiated by RIV" },
+  { id: "All", label: "All" },
+];
+// A tab's badge counts rows still needing attention (Pending RIV Approval
+// or GTM Notified) within that initiator, regardless of the status
+// dropdown filter above — computed off the full `intros` list.
+function introTabBadgeCount(intros, initiatedBy) {
+  return (intros || []).filter((i) => i.initiated_by === initiatedBy && ["Pending RIV Approval", "GTM Notified"].includes(i.approval_status)).length;
 }
 
 function AdminIntroductionsView() {
   const [intros, setIntros] = useState(null);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
+  const [tab, setTab] = useState("All");
   // View Details (19 Sep 2026 addendum) — lets RIV admin see an
   // introduction's uploaded supporting material files. Intentionally
   // admin-only: the GTM partner's own detail modal (IntroDetailModal)
@@ -1907,8 +2510,22 @@ function AdminIntroductionsView() {
   // "New Opportunity" (24 Sep 2026 addendum, Scenario C) — RIV proposing an
   // opportunity directly to a startup, for RIV-Direct retailers only.
   const [showNewOpportunity, setShowNewOpportunity] = useState(false);
-  const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter]);
+  // item 12 (9 Oct 2026 batch) — "Active" (default) vs "Archived" toggle,
+  // same two-state pattern as AdminRetailersView's own status filter.
+  const [showArchived, setShowArchived] = useState(false);
+  const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined, showArchived).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter, showArchived]);
   useEffect(() => { load(); }, [load]);
+
+  async function archive(id) {
+    setError("");
+    try { await api.archiveIntroductionAdmin(id); load(); }
+    catch (e) { setError(e.message); }
+  }
+  async function unarchive(id) {
+    setError("");
+    try { await api.unarchiveIntroductionAdmin(id); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   async function setStatus(id, status) {
     setError("");
@@ -1925,10 +2542,14 @@ function AdminIntroductionsView() {
     try { await api.rejectIntroduction(id); load(); }
     catch (e) { setError(e.message); }
   }
-  async function logProofDirect(id, proofOfIntroduction) {
+  // item 8 (25 Sep 2026 batch): RIV-direct proof logging now requires an
+  // uploaded file, same as the GTM partner's log-introduction flow — see
+  // RivDirectProofRow below, which collects { channel, introductionDate }
+  // plus the file and calls api.logRivProof directly (multipart), so this
+  // just reloads the list once it's done.
+  async function logProofDirect() {
     setError("");
-    try { await api.updateIntroductionAdmin(id, { approvalStatus: "Proof Recorded", proofOfIntroduction, status: "Introduced" }); load(); }
-    catch (e) { setError(e.message); }
+    try { load(); } catch (e) { setError(e.message); }
   }
   // 21 Sep 2026 addendum — the startup's own "Confirm introduction" step
   // was removed from their login (per RIV's call), so a GTM-partner
@@ -1950,18 +2571,47 @@ function AdminIntroductionsView() {
   }
 
   if (error) return <ErrorBanner text={error} />;
+  const visibleIntros = (intros || []).filter((i) => tab === "All" || i.initiated_by === tab);
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-        <select style={{ ...inputStyle, width: 240 }} value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="">All statuses</option>
-          {Object.keys(STATUS_COLORS).map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <PrimaryButton icon={Plus} onClick={() => setShowNewOpportunity(true)}>New Opportunity</PrimaryButton>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {ADMIN_INTRO_TABS.map((t) => {
+            const badge = t.id === "All" ? 0 : introTabBadgeCount(intros, t.id);
+            return (
+              <button key={t.id} onClick={() => setTab(t.id)} style={{
+                fontFamily: FONT, fontWeight: 600, fontSize: 12.5, padding: "8px 12px", borderRadius: 8,
+                border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
+                background: tab === t.id ? BRAND.cream : "transparent",
+                color: tab === t.id ? BRAND.coral : "#7A756F",
+              }}>
+                {t.label}
+                {badge > 0 && (
+                  <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 10.5, background: BRAND.coral, color: "#fff", borderRadius: 999, padding: "1px 6px" }}>{badge}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <select style={{ ...inputStyle, width: 220 }} value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="">All statuses</option>
+            {Object.keys(STATUS_COLORS).map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <GhostButton onClick={() => setShowArchived((v) => !v)}>
+            {showArchived ? "View Active" : "View Archived"}
+          </GhostButton>
+          <PrimaryButton icon={Plus} onClick={() => setShowNewOpportunity(true)}>New Opportunity</PrimaryButton>
+        </div>
       </div>
-      {!intros ? <Spinner /> : !intros.length ? (
-        <EmptyState icon={Handshake} title="No introductions" text="Nothing matches this filter yet." />
-      ) : intros.map((i) => (
+      {showArchived && (
+        <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 10 }}>
+          Showing archived introductions. Archiving doesn't delete anything — unarchive to bring a record back into the active list.
+        </div>
+      )}
+      {!intros ? <Spinner /> : !visibleIntros.length ? (
+        <EmptyState icon={Handshake} title={showArchived ? "Nothing archived" : "No introductions"} text={showArchived ? "Introductions you archive will show up here." : "Nothing matches this filter yet."} />
+      ) : visibleIntros.map((i) => (
         <Card key={i.id} style={{ padding: 16, marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
             <div>
@@ -1972,16 +2622,26 @@ function AdminIntroductionsView() {
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
               <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
-              <StatusBadge status={introducedStatusFor(i.status)} colors={INTRODUCED_STATUS_COLORS} />
+              <StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
             <span style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE" }}>Detail:</span>
-            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} />
+            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} label={approvalStatusForAdmin(i.approval_status)} />
             <StatusBadge status={i.status} />
           </div>
+          {/* item 13b — amber duplicate banner, mirroring
+              AdminRetailersView's retailer-duplicate banner style. */}
+          {i.duplicate_of_introduction_id && (
+            <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
+              Possible duplicate — {i.startup_name} was already introduced to {i.retailer_name} on {dateStr(i.duplicate_of_request_date)}, currently {interestStatusFor(i.duplicate_of_approval_status)}. Review before approving.
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <GhostButton onClick={() => setOpenIntroDetails(i)}>View Details</GhostButton>
+            {i.archived_at
+              ? <GhostButton onClick={() => unarchive(i.id)}>Unarchive</GhostButton>
+              : <GhostButton onClick={() => archive(i.id)}>Archive</GhostButton>}
           </div>
           {i.approval_status === "Pending RIV Approval" && (
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -1996,7 +2656,7 @@ function AdminIntroductionsView() {
             </div>
           )}
           {!i.partner_id && i.approval_status === "Startup Confirmed" && (
-            <RivDirectProofRow onSubmit={(proof) => logProofDirect(i.id, proof)} />
+            <RivDirectProofRow introId={i.id} onLogged={logProofDirect} />
           )}
           {i.initiated_by !== "Startup" && (
             <div style={{ marginTop: 10 }}>
@@ -2015,7 +2675,7 @@ function AdminIntroductionsView() {
         </Card>
       ))}
       {openIntroDetails && (
-        <IntroViewDetailsModal intro={openIntroDetails} onClose={() => setOpenIntroDetails(null)} isAdmin />
+        <IntroDetailModal intro={openIntroDetails} onClose={() => setOpenIntroDetails(null)} isAdmin />
       )}
       {showNewOpportunity && (
         <NewOpportunityModal onClose={() => setShowNewOpportunity(false)} onCreated={async () => load()} />
@@ -2093,12 +2753,44 @@ function NewOpportunityModal({ onClose, onCreated }) {
 
 // Inline "log the introduction myself" row for admin — only needed on RIV
 // Direct introductions, where there's no GTM partner login to do it.
-function RivDirectProofRow({ onSubmit }) {
-  const [proof, setProof] = useState("");
+//
+// item 8 (25 Sep 2026 batch): brought in line with the GTM partner's own
+// log-introduction flow — a required uploaded screenshot/PDF, not just
+// free text. No signed declaration checkbox (admin is already trusted).
+function RivDirectProofRow({ introId, onLogged }) {
+  const [channel, setChannel] = useState("Email");
+  const [introductionDate, setIntroductionDate] = useState("");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setError(""); setBusy(true);
+    try {
+      await api.logRivProof(introId, { channel, introductionDate: introductionDate || undefined }, file);
+      await onLogged();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  }
+
   return (
-    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-      <input style={{ ...inputStyle, flex: 1 }} placeholder="Proof of introduction (RIV Direct — no partner to log this)" value={proof} onChange={(e) => setProof(e.target.value)} />
-      <PrimaryButton disabled={!proof} onClick={() => onSubmit(proof)}>Log introduction</PrimaryButton>
+    <div style={{ marginTop: 10, padding: "10px 12px", background: BRAND.cream, borderRadius: 10 }}>
+      <ErrorBanner text={error} />
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <select style={{ ...inputStyle, width: 140 }} value={channel} onChange={(e) => setChannel(e.target.value)}>
+          <option value="Email">Email</option>
+          <option value="WhatsApp">WhatsApp</option>
+          <option value="LinkedIn">LinkedIn</option>
+          <option value="In-person">In-person</option>
+        </select>
+        <input style={{ ...inputStyle, width: 160 }} type="date" value={introductionDate} onChange={(e) => setIntroductionDate(e.target.value)} />
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: FONT, fontSize: 12.5, cursor: "pointer" }}>
+          <Paperclip size={13} />
+          {file ? file.name : "Attach proof (screenshot/PDF)"}
+          <input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        </label>
+        <PrimaryButton disabled={!file || busy} onClick={submit}>Log introduction</PrimaryButton>
+      </div>
     </div>
   );
 }
@@ -2184,6 +2876,7 @@ export default function RiseGtmApp() {
   const [showAddRetailer, setShowAddRetailer] = useState(false);
   const [detailStartupId, setDetailStartupId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  useDisableNumberInputScroll();
 
   useEffect(() => {
     if (user && !view) {
@@ -2233,7 +2926,7 @@ export default function RiseGtmApp() {
         )}
         {user.role === "startup" && view === "retailers" && <RetailerDirectoryView user={user} onRequest={setRequestRetailer} />}
 
-        {user.role === "admin" && view === "overview" && <AdminOverview />}
+        {user.role === "admin" && view === "overview" && <AdminOverview onNavigate={setView} />}
         {user.role === "admin" && view === "partners" && <AdminPartnersView />}
         {user.role === "admin" && view === "startups" && <AdminStartupsView />}
         {user.role === "admin" && view === "retailers" && <AdminRetailersView />}
@@ -2259,6 +2952,28 @@ function GlobalStyle() {
       input:focus, select:focus, textarea:focus { outline: 2px solid ${BRAND.coral}; outline-offset: 0; }
       .gtm-portal-spin { animation: gtm-portal-spin 0.9s linear infinite; }
       @keyframes gtm-portal-spin { to { transform: rotate(360deg); } }
+      /* 9 Oct 2026 batch, items 2 & 7 — remove the native up/down spinner
+         arrows from every number input in the app (commission/rate fields,
+         Opportunity Value, Deal Value, etc.) */
+      input[type=number]::-webkit-outer-spin-button,
+      input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     `}</style>
   );
+}
+// 9 Oct 2026 batch, item 2 — a number input's value silently changes when
+// the page is scrolled while that input happens to be focused (the
+// browser's default scroll-to-change-value behavior on type="number").
+// Blurring the focused number input on any wheel event neutralizes that
+// without touching individual inputs one by one. Mounted once, for the
+// lifetime of the authenticated app shell.
+function useDisableNumberInputScroll() {
+  useEffect(() => {
+    function handleWheel() {
+      const el = document.activeElement;
+      if (el && el.tagName === "INPUT" && el.type === "number") el.blur();
+    }
+    document.addEventListener("wheel", handleWheel, { passive: true });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, []);
 }
