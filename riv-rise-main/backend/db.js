@@ -95,6 +95,17 @@ const DEAL_STATUSES = [
 // an opportunity RIV has surfaced, before any introduction is made.
 const COMMIT_STATUSES = ["OK to introduce", "Already in touch", "Not a right customer"];
 
+// Support Type (7 Nov 2026 leader feedback) — when a GTM partner checks
+// introduction interest with a startup (createPartnerInitiatedIntroduction
+// in routes/portal.js), they now flag whether they're only making the
+// introduction or also staying involved through close. Informational only
+// for now — does not change computePartnerFee (portal.js), which is keyed
+// off initiated_by/partner_id, not this column; revisit if the leader wants
+// the fee split to vary by support type later. Defaults existing/omitted
+// rows to the original behavior ("Intro Only") so nothing already in the
+// pipeline is reinterpreted.
+const SUPPORT_TYPES = ["Intro Only", "Intro + Closure Support"];
+
 // How the introduction itself was made. CREATE TABLE below only fires on a
 // brand-new database — on any DB where the introductions table already
 // existed (every real deployment, including this one as of 18 Sep 2026),
@@ -443,6 +454,12 @@ async function initSchema() {
     -- asks to see the archive.
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS archived_by TEXT;
+
+    -- 7 Nov 2026 leader feedback — "Intro Only" vs "Intro + Closure Support"
+    -- flag, set by the GTM partner on Check Introduction Interest. See
+    -- SUPPORT_TYPES above. Defaults to 'Intro Only' so every pre-existing
+    -- row (which never had this choice) keeps its original meaning.
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS support_type TEXT NOT NULL DEFAULT 'Intro Only';
   `);
 
   // approval_status / engagement_stage (repurposed as Deal Status) both
@@ -502,6 +519,10 @@ async function initSchema() {
     ALTER TABLE introductions DROP CONSTRAINT IF EXISTS introductions_startup_commit_status_check;
     ALTER TABLE introductions ADD CONSTRAINT introductions_startup_commit_status_check
       CHECK (startup_commit_status IN (${COMMIT_STATUSES.map((s) => `'${s}'`).join(",")})) NOT VALID;
+
+    ALTER TABLE introductions DROP CONSTRAINT IF EXISTS introductions_support_type_check;
+    ALTER TABLE introductions ADD CONSTRAINT introductions_support_type_check
+      CHECK (support_type IN (${SUPPORT_TYPES.map((s) => `'${s}'`).join(",")})) NOT VALID;
   `);
 
   // channel — see the CHANNELS comment above: this table's channel CHECK
@@ -537,4 +558,4 @@ async function initSchema() {
   `);
 }
 
-module.exports = { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, initSchema };
+module.exports = { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, SUPPORT_TYPES, initSchema };

@@ -533,6 +533,11 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     // 24 Sep 2026 addendum: admin-viewing-only, like the file list below.
     ...(isAdmin ? [["Supporting material (link)", intro.supporting_material_url]] : []),
     ["Opportunity context", intro.gtm_context_note],
+    // 7 Nov 2026 leader feedback — only meaningful for a GTM-partner-
+    // initiated pairing (the only flow that collects it); RIV-direct/
+    // startup-initiated rows carry the column's default and shouldn't show
+    // a value nobody actually chose.
+    ...(intro.initiated_by === "GTM Partner" ? [["Support type", intro.support_type]] : []),
     ["How the partner introduced this", intro.how_introduced],
   ].filter(([, v]) => v);
   const proofRows = [
@@ -1474,7 +1479,10 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
-  const [form, setForm] = useState({ retailerId: "", startupId: "", opportunityContext: "" });
+  // 7 Nov 2026 leader feedback — "Intro Only" vs "Intro + Closure Support",
+  // picked here by the partner when checking interest. Defaults to the
+  // original "Intro Only" behavior.
+  const [form, setForm] = useState({ retailerId: "", startupId: "", opportunityContext: "", supportType: "Intro Only" });
 
   useEffect(() => {
     api.getRetailers().then((r) => setRetailers(r.retailers.filter((x) => x.status === "Active in network"))).catch((e) => setError(e.message));
@@ -1497,10 +1505,10 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
     try {
       await api.createIntroduction({
         retailerId: Number(form.retailerId), startupId: Number(form.startupId),
-        opportunityContext: form.opportunityContext,
+        opportunityContext: form.opportunityContext, supportType: form.supportType,
       });
       setSent(true);
-      setForm({ retailerId: "", startupId: "", opportunityContext: "" });
+      setForm({ retailerId: "", startupId: "", opportunityContext: "", supportType: "Intro Only" });
       await onCreated();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
@@ -1533,6 +1541,12 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
         </Field>
         <Field label="Opportunity context" required hint="Why do you believe this introduction is relevant? What business problem or opportunity exists?">
           <textarea style={{ ...inputStyle, minHeight: 70 }} value={form.opportunityContext} onChange={(e) => setForm({ ...form, opportunityContext: e.target.value })} />
+        </Field>
+        <Field label="Support type" required hint="Intro Only — you make the introduction and step back. Intro + Closure Support — you stay involved helping drive the deal to close.">
+          <select style={inputStyle} value={form.supportType} onChange={(e) => setForm({ ...form, supportType: e.target.value })}>
+            <option value="Intro Only">Intro Only</option>
+            <option value="Intro + Closure Support">Intro + Closure Support</option>
+          </select>
         </Field>
         <PrimaryButton
           disabled={busy || !form.retailerId || !form.startupId || !form.opportunityContext}

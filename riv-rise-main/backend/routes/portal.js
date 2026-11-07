@@ -9,7 +9,7 @@
 // through the exact same approval_status chain as everything else (see
 // db.js): RIV approves first no matter who initiated.
 const { Router } = require("express");
-const { pool, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
+const { pool, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, SUPPORT_TYPES } = require("../db.js");
 const { requireAuth, requireRole } = require("../middleware/auth.js");
 const { handleSupportingMaterialUpload } = require("../lib/supportingMaterialUpload.js");
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
@@ -438,8 +438,15 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
 // collected or required here any more.
 async function createPartnerInitiatedIntroduction(req, res, next) {
   try {
-    const { retailerId, startupId, opportunityContext } = req.body || {};
+    const { retailerId, startupId, opportunityContext, supportType } = req.body || {};
     if (!retailerId || !startupId) return res.status(400).json({ error: "Select both a retailer and a startup." });
+    // 7 Nov 2026 leader feedback — "Intro Only" vs "Intro + Closure Support".
+    // Falls back to the original default rather than rejecting the request
+    // outright, since this field is new and any client not yet updated
+    // should keep behaving the way it always did.
+    if (supportType && !SUPPORT_TYPES.includes(supportType)) {
+      return res.status(400).json({ error: "Invalid support type." });
+    }
 
     const { rows: p } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
     const partnerId = p[0]?.id;
@@ -473,10 +480,10 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
     const { rows } = await pool.query(
       `INSERT INTO introductions
          (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
-          gtm_context_note, consent_accepted, consent_accepted_at)
-       VALUES ('GTM Partner', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested', $5, true, now())
+          gtm_context_note, consent_accepted, consent_accepted_at, support_type)
+       VALUES ('GTM Partner', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested', $5, true, now(), $6)
        RETURNING *`,
-      [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null]
+      [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null, supportType || "Intro Only"]
     );
     await notifyAdmins("New partner-initiated introduction", rows[0].id);
     res.status(201).json({ introduction: publicIntro(rows[0]) });
