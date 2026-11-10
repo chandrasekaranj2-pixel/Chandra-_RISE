@@ -244,8 +244,8 @@ router.put("/startups/:id", async (req, res, next) => {
        WHERE id = $1 RETURNING *`,
       [
         req.params.id, f.startupName, f.founderName, f.phone, f.sector, f.solutionSummary,
-        f.onboardingStage, f.agreementLink, f.agreementSignedDate, f.participationFeeStatus,
-        f.participationFeeDueDate, f.equityPct, f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
+        f.onboardingStage, f.agreementLink, f.agreementSignedDate || null, f.participationFeeStatus,
+        f.participationFeeDueDate || null, f.equityPct === "" ? null : f.equityPct, f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
         f.problemDescription, f.solutionDescription, f.topBenefits, f.techStack, f.subVertical,
         f.competition, f.competitiveAdvantage, f.payingCustomerCount, f.notableCustomers, f.keyMilestones,
         f.legalEntity, f.website, f.city, f.hqCountry, f.yearIncorporated, f.foundingTeamDetails,
