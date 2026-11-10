@@ -187,6 +187,258 @@ async function sendStartupWelcomeEmail({ to, founderName, startupName, rivOwner,
   return sendEmail({ to, subject, text, html, replyTo: adminNotifyEmail(), type: "startup-welcome" });
 }
 
+
+// --- Shared layout for the notification emails --------------------------
+//
+// Every notification below is built from the same few pieces (greeting,
+// paragraphs, an optional facts block, an optional button, the sign-off) so
+// they read as one family and stay in the voice of the welcome email.
+
+function money(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? "");
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+}
+
+// DATE columns come back from pg as JS Dates built at LOCAL midnight, so the
+// calendar day is read with local getters (reading it in UTC would show the
+// previous day on a server running east of UTC). ISO strings are accepted too.
+function fmtDate(value) {
+  if (!value) return "";
+  let y, m, day;
+  if (value instanceof Date) {
+    [y, m, day] = [value.getFullYear(), value.getMonth(), value.getDate()];
+  } else {
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value));
+    if (!match) return String(value);
+    [y, m, day] = [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
+  }
+  return new Date(Date.UTC(y, m, day)).toLocaleDateString("en-IN", { dateStyle: "medium", timeZone: "UTC" });
+}
+
+function layout({ name, paragraphs, facts, cta, signoff = "The Retail Innovation Ventures Team" }) {
+  const hi = `Hi ${name || "there"},`;
+  const factLines = (facts || []).filter(([, v]) => v);
+  const text = [
+    hi,
+    ...paragraphs,
+    ...(factLines.length ? [factLines.map(([k, v]) => `${k}: ${v}`).join("\n")] : []),
+    ...(cta ? [`${cta.label}: ${cta.url}`] : []),
+    `Warm regards,\n${signoff}`,
+  ].join("\n\n");
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#1a1a1a;max-width:600px">
+<p>${escapeHtml(hi)}</p>
+${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join("\n")}
+${factLines.length ? `<table style="border-collapse:collapse;margin:0 0 16px">${factLines.map(([k, v]) => `<tr><td style="padding:2px 16px 2px 0;color:#666">${escapeHtml(k)}</td><td style="padding:2px 0"><strong>${escapeHtml(v)}</strong></td></tr>`).join("")}</table>` : ""}
+${cta ? `<p><a href="${escapeHtml(cta.url)}">${escapeHtml(cta.label)}</a></p>` : ""}
+<p>Warm regards,<br>${escapeHtml(signoff)}</p>
+</div>`;
+  return { text, html };
+}
+
+const portalCta = (label = "Open the RISE Portal") => ({ label, url: `${appUrl()}/` });
+
+// --- 3. Portal login ready (startup or GTM partner) ---------------------
+// No password in the email, ever: the admin shares it separately.
+function buildLoginReady({ name, email, rivOwner, role }) {
+  const doWhat = role === "partner"
+    ? "submit retailers and log the introductions you make"
+    : "request introductions to retailers and follow each one";
+  const { text, html } = layout({
+    name,
+    paragraphs: [
+      `Your RISE Portal account is set up. You can sign in at ${appUrl()}/ using ${email}.`,
+      `Your password was shared with you separately${rivOwner ? ` by ${rivOwner}` : ""}. We never send passwords by email.`,
+      `Once you're in, you can ${doWhat}.`,
+      "If anything doesn't work, just reply to this email.",
+    ],
+    cta: portalCta("Sign in to the RISE Portal"),
+  });
+  return { subject: "Your RISE Portal login is ready", text, html };
+}
+
+// --- 4. New opportunity from RIV ----------------------------------------
+function buildNewOpportunity({ founderName, startupName, retailerName, context }) {
+  const { text, html } = layout({
+    name: founderName || startupName,
+    paragraphs: [
+      `We think ${retailerName} could be a strong fit for ${startupName}, and we'd like to introduce you.`,
+      ...(context ? [`Why we picked them: ${context}`] : []),
+      "Please sign in to the RISE Portal and tell us where you stand: OK to introduce, Already in touch, or Not a right customer.",
+    ],
+    cta: portalCta(),
+  });
+  return { subject: `A new retailer opportunity for ${oneLine(startupName)}: ${oneLine(retailerName)}`, text, html };
+}
+
+// --- 4b. Reminder for an unanswered opportunity -------------------------
+function buildOpportunityReminder({ founderName, startupName, retailerName, hasPortalLogin }) {
+  const { text, html } = layout({
+    name: founderName || startupName,
+    paragraphs: [
+      `A few days ago we flagged ${retailerName} as a possible fit for ${startupName}, and we haven't heard back yet.`,
+      hasPortalLogin
+        ? "It only takes a moment: sign in to the RISE Portal and tell us whether it's OK to introduce, you're already in touch, or it's not a right customer."
+        : "It only takes a moment: just reply to this email and tell us whether it's OK to introduce, you're already in touch, or it's not a right customer.",
+      "If the timing isn't right, that's fine too. We just want to know so we can plan around it.",
+    ],
+    cta: hasPortalLogin ? portalCta() : undefined,
+  });
+  return { subject: `A quick reminder: ${oneLine(retailerName)} is waiting on your response`, text, html };
+}
+
+// --- 5. Request approved -------------------------------------------------
+function buildRequestApproved({ founderName, startupName, retailerName }) {
+  const { text, html } = layout({
+    name: founderName || startupName,
+    paragraphs: [
+      `We've reviewed your request to be introduced to ${retailerName} and approved it.`,
+      "What happens next: we'll arrange the introduction and email you as soon as it's made. You can follow progress any time in the RISE Portal.",
+    ],
+    cta: portalCta(),
+  });
+  return { subject: `Good news: your request to meet ${oneLine(retailerName)} is approved`, text, html };
+}
+
+// --- 6. Request not taken forward ---------------------------------------
+function buildRequestRejected({ founderName, startupName, retailerName, rivOwner }) {
+  const { text, html } = layout({
+    name: founderName || startupName,
+    paragraphs: [
+      `Thank you for your request to be introduced to ${retailerName}. After reviewing it, we're not able to take this one forward right now.`,
+      `That's no reflection on ${startupName}. If you'd like to talk it through or suggest another retailer, just reply${rivOwner ? ` and ${rivOwner} will pick it up` : ""}.`,
+    ],
+  });
+  return { subject: `An update on your request for ${oneLine(retailerName)}`, text, html };
+}
+
+// --- 7. Startup confirmed: GTM partner can go ahead ----------------------
+function buildPartnerGoAhead({ partnerName, startupName, retailerName }) {
+  const { text, html } = layout({
+    name: partnerName,
+    paragraphs: [
+      `${startupName} has confirmed they'd like to be introduced to ${retailerName}, so you're clear to make the introduction.`,
+      "Once it's done, please log it in the RISE Portal with a screenshot or PDF as proof.",
+      "Thank you for the help.",
+    ],
+    cta: portalCta(),
+  });
+  return { subject: `${oneLine(startupName)} is keen: please go ahead with the ${oneLine(retailerName)} introduction`, text, html };
+}
+
+// --- 8. Introduction made ------------------------------------------------
+function buildIntroductionMade({ founderName, startupName, retailerName, introductionDate, channel }) {
+  const { text, html } = layout({
+    name: founderName || startupName,
+    paragraphs: [
+      `We've introduced ${startupName} to ${retailerName}.`,
+      "The next step is yours: take the conversation forward with them, and keep the status up to date in the RISE Portal so we can help where it's useful.",
+    ],
+    facts: [["Introduced on", fmtDate(introductionDate)], ["How", channel]],
+    cta: portalCta(),
+  });
+  return { subject: `You've been introduced to ${oneLine(retailerName)}`, text, html };
+}
+
+// --- 9. Invoice issued ---------------------------------------------------
+function buildInvoiceIssued({ founderName, startupName, invoiceId, amount, dueDate, retailers, rivOwner }) {
+  const { text, html } = layout({
+    name: founderName || startupName,
+    paragraphs: [
+      `Your invoice for ${startupName} has been issued.`,
+      `You can see the details in the RISE Portal. If something looks off, reply${rivOwner ? ` and ${rivOwner} will sort it out` : " and we'll sort it out"}.`,
+    ],
+    facts: [["Invoice", `#${invoiceId}`], ["Amount", money(amount)], ["Due", fmtDate(dueDate)], ["For", retailers]],
+    cta: portalCta(),
+  });
+  const due = dueDate ? `, due ${fmtDate(dueDate)}` : "";
+  return { subject: `Invoice #${invoiceId} from Retail Innovation Ventures: ${money(amount)}${due}`, text, html };
+}
+
+// --- 10. Payment received ------------------------------------------------
+function buildPaymentReceived({ founderName, startupName, invoiceId, amount }) {
+  const { text, html } = layout({
+    name: founderName || startupName,
+    paragraphs: [`We've received your payment of ${money(amount)} for invoice #${invoiceId}. Thank you, and thanks for being part of RISE.`],
+  });
+  return { subject: "Payment received, thank you", text, html };
+}
+
+// --- 11. Payout issued (GTM partner) --------------------------------------
+function buildPayoutIssued({ partnerName, amount, retailers }) {
+  const { text, html } = layout({
+    name: partnerName,
+    paragraphs: [
+      `We've issued a payout of ${money(amount)} to you${retailers ? ` for ${retailers}` : ""}.`,
+      "The full breakdown is in the RISE Portal. Thank you for the introductions.",
+    ],
+    cta: portalCta(),
+  });
+  return { subject: `Your RISE payout of ${money(amount)} has been issued`, text, html };
+}
+
+// --- Partner welcome (mirror of the startup welcome) ----------------------
+function buildPartnerWelcome({ partnerName, rivOwner, hasPortalLogin }) {
+  const contact = rivOwner ? `${rivOwner} is` : "Your RIV contact is";
+  const bullets = [
+    { title: "Introductions that matter.", body: "Bring us retailers who'd be a good fit for the startups in RISE, and make the introductions that open doors." },
+    ...(hasPortalLogin
+      ? [{ title: "Everything in one place.", body: "In your RISE Portal you can submit retailers, log each introduction you make, and follow where it stands." }]
+      : []),
+    { title: "A real person on our side.", body: `${contact} your point of contact. Reply to this email any time, and it comes straight to our team.` },
+  ];
+  const greetingName = partnerName || "there";
+  const link = `${appUrl()}/`;
+  const text = `Hi ${greetingName},
+
+Welcome to Retail Innovation Ventures. We're delighted to have you on board as a GTM partner, and we're genuinely excited to work with you.
+
+Here's what to expect from here:
+
+${bullets.map((b) => `- ${b.title} ${b.body}`).join("\n")}
+${hasPortalLogin ? `\nRISE Portal: ${link}\n` : ""}
+We're looking forward to building this with you.
+
+Warm regards,
+The Retail Innovation Ventures Team`;
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#1a1a1a;max-width:600px">
+<p>Hi ${escapeHtml(greetingName)},</p>
+<p>Welcome to <strong>Retail Innovation Ventures</strong>. We're delighted to have you on board as a GTM partner, and we're genuinely excited to work with you.</p>
+<p>Here's what to expect from here:</p>
+<ul style="padding-left:20px">
+${bullets.map((b) => `<li style="margin-bottom:8px"><strong>${escapeHtml(b.title)}</strong> ${escapeHtml(b.body)}</li>`).join("\n")}
+</ul>
+${hasPortalLogin ? `<p><a href="${escapeHtml(link)}">Open the RISE Portal</a></p>` : ""}
+<p>We're looking forward to building this with you.</p>
+<p>Warm regards,<br>The Retail Innovation Ventures Team</p>
+</div>`;
+  return { subject: "Welcome to Retail Innovation Ventures!", text, html };
+}
+
+async function sendPartnerWelcomeEmail({ to, partnerName, rivOwner, hasPortalLogin }) {
+  const { subject, text, html } = buildPartnerWelcome({ partnerName, rivOwner, hasPortalLogin });
+  return sendEmail({ to, subject, text, html, replyTo: adminNotifyEmail(), type: "partner-welcome" });
+}
+
+// --- 13. RIV team alert (to the shared inbox; off unless enabled) ---------
+function buildRivAlert({ event, startupName, retailerName, detail }) {
+  const body = `${detail}\n\nOpen it in the admin panel: ${appUrl()}/`;
+  return {
+    subject: `[RISE] ${oneLine(event)}: ${oneLine(startupName)} / ${oneLine(retailerName)}`,
+    text: body,
+    html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6"><p>${escapeHtml(detail)}</p><p><a href="${escapeHtml(appUrl())}/">Open the admin panel</a></p></div>`,
+  };
+}
+
+// Runs an email job so that it can never break (or noticeably slow) the
+// request that triggered it: errors are logged and swallowed, and the wait
+// is capped. Same "side effect must not take down the main flow" rule as
+// the rest of this file.
+async function safely(label, job, capMs = 4000) {
+  const run = Promise.resolve().then(job).catch((err) => console.error(`${label} email failed:`, err));
+  await Promise.race([run, new Promise((r) => setTimeout(r, capMs))]);
+}
+
 module.exports = {
   sendEmail,
   sendIntroductionRequestAck,
@@ -194,4 +446,19 @@ module.exports = {
   buildIntroductionRequestAck,
   buildStartupWelcome,
   adminNotifyEmail,
+  appUrl,
+  safely,
+  buildLoginReady,
+  buildNewOpportunity,
+  buildOpportunityReminder,
+  buildRequestApproved,
+  buildRequestRejected,
+  buildPartnerGoAhead,
+  buildIntroductionMade,
+  buildInvoiceIssued,
+  buildPaymentReceived,
+  buildPayoutIssued,
+  buildPartnerWelcome,
+  sendPartnerWelcomeEmail,
+  buildRivAlert,
 };
