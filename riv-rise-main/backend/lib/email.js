@@ -46,26 +46,43 @@ async function sendEmail({ to, subject, text, html }) {
   return { sent: true };
 }
 
+// Names come from user-entered data, so anything interpolated into an html
+// body goes through this — a retailer called "AT&T" or "<b>Acme" should
+// render as typed, not as markup.
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // Acknowledgement email for a just-submitted "Request Intro" (startup
 // branch of POST /api/introductions). Callers should fire this after the
 // introduction row is already committed and the HTTP response already
 // sent — a slow or failing email provider should never delay or fail the
 // actual request. See routes/portal.js.
 async function sendIntroductionRequestAck({ to, founderName, retailerName, requestedAt }) {
-  const when = new Date(requestedAt).toLocaleString("en-IN", {
+  // timeZone is explicit because the server's own zone (usually UTC when
+  // hosted) isn't what the reader expects. "IST" is appended by hand since
+  // Intl rejects timeZoneName alongside dateStyle/timeStyle.
+  const when = `${new Date(requestedAt).toLocaleString("en-IN", {
     dateStyle: "medium",
     timeStyle: "short",
-  });
+    timeZone: "Asia/Kolkata",
+  })} IST`;
+  const greetingName = founderName || "there";
   const subject = `Introduction request received: ${retailerName}`;
-  const text = `Hi ${founderName || "there"},
+  const text = `Hi ${greetingName},
 
 Thanks for submitting an introduction request to ${retailerName} on the RISE Portal.
 
 RIV will review your request and follow up with next steps. You submitted this on ${when}.
 
 — RISE Portal (Retail Innovation Ventures)`;
-  const html = `<p>Hi ${founderName || "there"},</p>
-<p>Thanks for submitting an introduction request to <strong>${retailerName}</strong> on the RISE Portal.</p>
+  const html = `<p>Hi ${escapeHtml(greetingName)},</p>
+<p>Thanks for submitting an introduction request to <strong>${escapeHtml(retailerName)}</strong> on the RISE Portal.</p>
 <p>RIV will review your request and follow up with next steps. You submitted this on ${when}.</p>
 <p>— RISE Portal (Retail Innovation Ventures)</p>`;
 

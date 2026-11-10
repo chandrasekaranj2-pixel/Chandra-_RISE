@@ -390,10 +390,10 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
     res.status(201).json({ introduction: publicIntro(rows[0]) });
 
     // Acknowledgement email (addendum) — fired after the row is committed
-    // and the response already sent, so a slow or failing SendGrid call
+    // and the response already sent, so a slow or failing Resend call
     // never delays or fails the actual submission. Errors are logged, not
     // thrown: req.user.email always exists (it's the logged-in startup
-    // login), but a bad/missing SendGrid config or a transient provider
+    // login), but a bad/missing Resend config or a transient provider
     // error shouldn't surface to the user as a failed request when the
     // introduction itself was created successfully.
     sendIntroductionRequestAck({
