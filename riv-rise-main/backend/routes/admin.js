@@ -116,8 +116,8 @@ router.put("/partners/:id", async (req, res, next) => {
        WHERE id = $1 RETURNING *`,
       [
         req.params.id, f.fullName, f.company, f.phone, f.linkedinUrl, f.sectorFocus, f.region,
-        f.onboardingStage, f.agreementLink, f.agreementSignedDate, f.defaultPayoutSplit,
-        f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
+        f.onboardingStage, f.agreementLink, f.agreementSignedDate || null, f.defaultPayoutSplit === "" ? null : f.defaultPayoutSplit,
+        f.revenueShareOverride === "" ? null : (f.revenueShareOverride ?? null), f.riv_owner, f.status, f.notes,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
