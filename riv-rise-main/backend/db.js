@@ -334,6 +334,13 @@ async function initSchema() {
     ALTER TABLE retailers ADD COLUMN IF NOT EXISTS duplicate_of_retailer_id INTEGER REFERENCES retailers(id) ON DELETE SET NULL;
     ALTER TABLE retailers ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
 
+    -- When the "Welcome to Retail Innovation Ventures" email was sent to the
+    -- startup (set when RIV marks them Onboarded) — guards against sending
+    -- it twice. NULL = not sent yet. Startups already onboarded before this
+    -- column existed also read as NULL, but the email only fires on the
+    -- change INTO Onboarded, so they are not emailed retroactively.
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS welcome_email_sent_at TIMESTAMPTZ;
+
     -- Startup profile fields for the new Startup Detail View (addendum §4).
     -- Company deck upload is explicitly Phase 2 (per the source notes) and
     -- deliberately not modeled here yet.

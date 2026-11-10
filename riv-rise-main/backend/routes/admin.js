@@ -9,6 +9,7 @@ const portalRoutes = require("./portal.js");
 const { computePartnerFee } = portalRoutes;
 const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMaterialStorage.js");
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
+const { sendStartupWelcomeEmail } = require("../lib/email.js");
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -219,6 +220,8 @@ router.post("/startups", async (req, res, next) => {
 router.put("/startups/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage FROM startups WHERE id = $1", [req.params.id]);
+    const prevStage = prevRows[0]?.onboarding_stage;
     const { rows } = await pool.query(
       `UPDATE startups SET
          startup_name = COALESCE($2, startup_name), founder_name = COALESCE($3, founder_name), phone = COALESCE($4, phone),
@@ -250,11 +253,79 @@ router.put("/startups/:id", async (req, res, next) => {
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Startup not found." });
-    res.json({ startup: rows[0] });
+
+    // Welcome email (RIV -> startup) the moment the stage changes INTO
+    // "Onboarded" — only on the transition, not on every later save of an
+    // already-onboarded startup. Sent before responding (serverless
+    // functions can be frozen once the response is out) and failure-
+    // isolated: a mail problem never fails the save. `welcomeEmail` reports
+    // what happened ("sent" | "skipped" | "failed"); absent when this save
+    // wasn't an onboarding.
+    let startup = rows[0];
+    let welcomeEmail;
+    if (startup.onboarding_stage === "Onboarded" && prevStage !== "Onboarded") {
+      welcomeEmail = await sendWelcomeOnce(startup);
+      if (welcomeEmail === "sent") startup = { ...startup, welcome_email_sent_at: new Date().toISOString() };
+    }
+    res.json({ startup, ...(welcomeEmail && welcomeEmail !== "already-sent" ? { welcomeEmail } : {}) });
   } catch (err) {
     next(err);
   }
 });
+
+// POST /api/admin/startups/:id/send-welcome-email — re-send the welcome
+// (e.g. it bounced, or the address was wrong and has since been fixed).
+// Only for startups already marked Onboarded.
+router.post("/startups/:id/send-welcome-email", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM startups WHERE id = $1", [req.params.id]);
+    const startup = rows[0];
+    if (!startup) return res.status(404).json({ error: "Startup not found." });
+    if (startup.onboarding_stage !== "Onboarded") {
+      return res.status(400).json({ error: "The welcome email is sent once a startup is marked Onboarded." });
+    }
+    const welcomeEmail = await sendWelcomeOnce(startup, { force: true });
+    res.json({ ok: true, email: startup.email, welcomeEmail });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Sends the welcome email at most once per startup. The send is "claimed"
+// first with a conditional UPDATE (welcome_email_sent_at IS NULL), so two
+// admins saving at the same moment can't both send it. If the send doesn't
+// actually go out (mail not configured, or the provider errors) the claim
+// is released so a later attempt can still deliver it. `force` skips the
+// claim for the manual re-send route.
+async function sendWelcomeOnce(startup, { force = false } = {}) {
+  if (!force) {
+    const claim = await pool.query(
+      "UPDATE startups SET welcome_email_sent_at = now() WHERE id = $1 AND welcome_email_sent_at IS NULL RETURNING id",
+      [startup.id]
+    );
+    if (!claim.rows[0]) return "already-sent";
+  }
+  const release = () => (force ? null : pool.query("UPDATE startups SET welcome_email_sent_at = NULL WHERE id = $1", [startup.id]).catch(() => {}));
+  try {
+    const result = await sendStartupWelcomeEmail({
+      to: startup.email,
+      founderName: startup.founder_name,
+      startupName: startup.startup_name,
+      rivOwner: startup.riv_owner,
+      hasPortalLogin: !!startup.user_id,
+    });
+    if (result.skipped) {
+      await release();
+      return "skipped";
+    }
+    if (force) await pool.query("UPDATE startups SET welcome_email_sent_at = now() WHERE id = $1", [startup.id]);
+    return "sent";
+  } catch (err) {
+    console.error("Startup welcome email failed:", err);
+    await release();
+    return "failed";
+  }
+}
 
 router.post("/startups/:id/provision-login", async (req, res, next) => {
   try {

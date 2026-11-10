@@ -387,21 +387,22 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
        previouslyEngaged === "true", priorEngagementDetails || null, JSON.stringify(supportingMaterial),
        duplicateOfIntroductionId]
     );
-    res.status(201).json({ introduction: publicIntro(rows[0]) });
-
-    // Acknowledgement email (addendum) — fired after the row is committed
-    // and the response already sent, so a slow or failing Resend call
-    // never delays or fails the actual submission. Errors are logged, not
-    // thrown: req.user.email always exists (it's the logged-in startup
-    // login), but a bad/missing Resend config or a transient provider
-    // error shouldn't surface to the user as a failed request when the
-    // introduction itself was created successfully.
-    sendIntroductionRequestAck({
+    // Acknowledgement email (addendum) — sent once the row is committed, and
+    // BEFORE responding: this app runs as a Netlify Function, and a
+    // serverless function can be frozen as soon as the response is sent, so
+    // an email fired afterwards may never leave. Errors are logged, not
+    // thrown (a bad/missing Resend config or a transient provider error
+    // shouldn't fail a submission that was saved fine), and the wait is
+    // capped so a slow provider can't noticeably delay the response.
+    const ackJob = sendIntroductionRequestAck({
       to: req.user.email,
       founderName: req.user.name,
       retailerName: retailer.name,
       requestedAt: rows[0].created_at,
     }).catch((err) => console.error("Introduction ack email failed:", err));
+    await Promise.race([ackJob, new Promise((resolve) => setTimeout(resolve, 4000))]);
+
+    res.status(201).json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
   }
