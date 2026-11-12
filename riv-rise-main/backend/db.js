@@ -334,6 +334,19 @@ async function initSchema() {
     ALTER TABLE retailers ADD COLUMN IF NOT EXISTS duplicate_of_retailer_id INTEGER REFERENCES retailers(id) ON DELETE SET NULL;
     ALTER TABLE retailers ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
 
+    -- When the "Welcome to Retail Innovation Ventures" email was sent to the
+    -- startup (set when RIV marks them Onboarded) — guards against sending
+    -- it twice. NULL = not sent yet. Startups already onboarded before this
+    -- column existed also read as NULL, but the email only fires on the
+    -- change INTO Onboarded, so they are not emailed retroactively.
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS welcome_email_sent_at TIMESTAMPTZ;
+    -- Same once-only guard for the GTM partner welcome email, plus the
+    -- reminder bookkeeping for New Opportunities a startup hasn't answered
+    -- (see lib/reminders.js).
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS welcome_email_sent_at TIMESTAMPTZ;
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS reminder_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE introductions ADD COLUMN IF NOT EXISTS last_reminder_at TIMESTAMPTZ;
+
     -- Startup profile fields for the new Startup Detail View (addendum §4).
     -- Company deck upload is explicitly Phase 2 (per the source notes) and
     -- deliberately not modeled here yet.

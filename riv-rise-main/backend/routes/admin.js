@@ -9,6 +9,8 @@ const portalRoutes = require("./portal.js");
 const { computePartnerFee } = portalRoutes;
 const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMaterialStorage.js");
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
+const { sendStartupWelcomeEmail, sendPartnerWelcomeEmail } = require("../lib/email.js");
+const notify = require("../lib/notify.js");
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -101,6 +103,8 @@ router.post("/partners", async (req, res, next) => {
 router.put("/partners/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage FROM partners WHERE id = $1", [req.params.id]);
+    const prevStage = prevRows[0]?.onboarding_stage;
     const { rows } = await pool.query(
       `UPDATE partners SET
          full_name = COALESCE($2, full_name), company = COALESCE($3, company), phone = COALESCE($4, phone),
@@ -112,12 +116,37 @@ router.put("/partners/:id", async (req, res, next) => {
        WHERE id = $1 RETURNING *`,
       [
         req.params.id, f.fullName, f.company, f.phone, f.linkedinUrl, f.sectorFocus, f.region,
-        f.onboardingStage, f.agreementLink, f.agreementSignedDate, f.defaultPayoutSplit,
-        f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
+        f.onboardingStage, f.agreementLink, f.agreementSignedDate || null, f.defaultPayoutSplit === "" ? null : f.defaultPayoutSplit,
+        f.revenueShareOverride === "" ? null : (f.revenueShareOverride ?? null), f.riv_owner, f.status, f.notes,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
-    res.json({ partner: rows[0] });
+
+    // Welcome email (RIV -> GTM partner) on the transition INTO "Onboarded",
+    // same once-only rules as the startup welcome below.
+    let partner = rows[0];
+    let welcomeEmail;
+    if (partner.onboarding_stage === "Onboarded" && prevStage !== "Onboarded") {
+      welcomeEmail = await sendPartnerWelcomeOnce(partner);
+      if (welcomeEmail === "sent") partner = { ...partner, welcome_email_sent_at: new Date().toISOString() };
+    }
+    res.json({ partner, ...(welcomeEmail && welcomeEmail !== "already-sent" ? { welcomeEmail } : {}) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/partners/:id/send-welcome-email — manual re-send.
+router.post("/partners/:id/send-welcome-email", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM partners WHERE id = $1", [req.params.id]);
+    const partner = rows[0];
+    if (!partner) return res.status(404).json({ error: "Partner not found." });
+    if (partner.onboarding_stage !== "Onboarded") {
+      return res.status(400).json({ error: "The welcome email is sent once a partner is marked Onboarded." });
+    }
+    const welcomeEmail = await sendPartnerWelcomeOnce(partner, { force: true });
+    res.json({ ok: true, email: partner.email, welcomeEmail });
   } catch (err) {
     next(err);
   }
@@ -134,6 +163,9 @@ router.post("/partners/:id/provision-login", async (req, res, next) => {
     const partner = partnerRows[0];
     if (!partner) return res.status(404).json({ error: "Partner not found." });
 
+    // Only the FIRST provisioning gets the "login is ready" email; the same
+    // route also resets a password, which shouldn't email anyone.
+    const firstTime = partner.portal_login_status !== "Provisioned";
     const password_hash = bcrypt.hashSync(password, 10);
     const { rows: userRows } = await pool.query(
       `INSERT INTO users (email, password_hash, name, role, company) VALUES ($1,$2,$3,'partner',$4)
@@ -145,6 +177,7 @@ router.post("/partners/:id/provision-login", async (req, res, next) => {
       "UPDATE partners SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
       [req.params.id, userRows[0].id]
     );
+    if (firstTime) await notify.loginReady({ role: "partner", row: partner });
     res.json({ ok: true, email: partner.email });
   } catch (err) {
     next(err);
@@ -219,6 +252,8 @@ router.post("/startups", async (req, res, next) => {
 router.put("/startups/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage FROM startups WHERE id = $1", [req.params.id]);
+    const prevStage = prevRows[0]?.onboarding_stage;
     const { rows } = await pool.query(
       `UPDATE startups SET
          startup_name = COALESCE($2, startup_name), founder_name = COALESCE($3, founder_name), phone = COALESCE($4, phone),
@@ -241,8 +276,8 @@ router.put("/startups/:id", async (req, res, next) => {
        WHERE id = $1 RETURNING *`,
       [
         req.params.id, f.startupName, f.founderName, f.phone, f.sector, f.solutionSummary,
-        f.onboardingStage, f.agreementLink, f.agreementSignedDate, f.participationFeeStatus,
-        f.participationFeeDueDate, f.equityPct, f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
+        f.onboardingStage, f.agreementLink, f.agreementSignedDate || null, f.participationFeeStatus,
+        f.participationFeeDueDate || null, f.equityPct === "" ? null : f.equityPct, f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
         f.problemDescription, f.solutionDescription, f.topBenefits, f.techStack, f.subVertical,
         f.competition, f.competitiveAdvantage, f.payingCustomerCount, f.notableCustomers, f.keyMilestones,
         f.legalEntity, f.website, f.city, f.hqCountry, f.yearIncorporated, f.foundingTeamDetails,
@@ -250,11 +285,90 @@ router.put("/startups/:id", async (req, res, next) => {
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Startup not found." });
-    res.json({ startup: rows[0] });
+
+    // Welcome email (RIV -> startup) the moment the stage changes INTO
+    // "Onboarded" — only on the transition, not on every later save of an
+    // already-onboarded startup. Sent before responding (serverless
+    // functions can be frozen once the response is out) and failure-
+    // isolated: a mail problem never fails the save. `welcomeEmail` reports
+    // what happened ("sent" | "skipped" | "failed"); absent when this save
+    // wasn't an onboarding.
+    let startup = rows[0];
+    let welcomeEmail;
+    if (startup.onboarding_stage === "Onboarded" && prevStage !== "Onboarded") {
+      welcomeEmail = await sendWelcomeOnce(startup);
+      if (welcomeEmail === "sent") startup = { ...startup, welcome_email_sent_at: new Date().toISOString() };
+    }
+    res.json({ startup, ...(welcomeEmail && welcomeEmail !== "already-sent" ? { welcomeEmail } : {}) });
   } catch (err) {
     next(err);
   }
 });
+
+// POST /api/admin/startups/:id/send-welcome-email — re-send the welcome
+// (e.g. it bounced, or the address was wrong and has since been fixed).
+// Only for startups already marked Onboarded.
+router.post("/startups/:id/send-welcome-email", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM startups WHERE id = $1", [req.params.id]);
+    const startup = rows[0];
+    if (!startup) return res.status(404).json({ error: "Startup not found." });
+    if (startup.onboarding_stage !== "Onboarded") {
+      return res.status(400).json({ error: "The welcome email is sent once a startup is marked Onboarded." });
+    }
+    const welcomeEmail = await sendWelcomeOnce(startup, { force: true });
+    res.json({ ok: true, email: startup.email, welcomeEmail });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Sends a welcome email at most once per startup / partner. The send is
+// "claimed" first with a conditional UPDATE (welcome_email_sent_at IS NULL),
+// so two admins saving at the same moment can't both send it. If the send
+// doesn't actually go out (mail not configured, or the provider errors) the
+// claim is released so a later attempt can still deliver it. `force` skips
+// the claim for the manual re-send routes.
+async function claimAndSend(table, id, send, { force = false } = {}) {
+  if (!force) {
+    const claim = await pool.query(
+      `UPDATE ${table} SET welcome_email_sent_at = now() WHERE id = $1 AND welcome_email_sent_at IS NULL RETURNING id`,
+      [id]
+    );
+    if (!claim.rows[0]) return "already-sent";
+  }
+  const release = () => (force ? null : pool.query(`UPDATE ${table} SET welcome_email_sent_at = NULL WHERE id = $1`, [id]).catch(() => {}));
+  try {
+    const result = await send();
+    if (result.skipped) {
+      await release();
+      return "skipped";
+    }
+    if (force) await pool.query(`UPDATE ${table} SET welcome_email_sent_at = now() WHERE id = $1`, [id]);
+    return "sent";
+  } catch (err) {
+    console.error("Welcome email failed:", err);
+    await release();
+    return "failed";
+  }
+}
+
+const sendWelcomeOnce = (startup, opts) =>
+  claimAndSend("startups", startup.id, () => sendStartupWelcomeEmail({
+    to: startup.email,
+    founderName: startup.founder_name,
+    startupName: startup.startup_name,
+    rivOwner: startup.riv_owner,
+    hasPortalLogin: !!startup.user_id,
+  }), opts);
+
+const sendPartnerWelcomeOnce = (partner, opts) =>
+  claimAndSend("partners", partner.id, () => sendPartnerWelcomeEmail({
+    to: partner.email,
+    partnerName: partner.full_name,
+    rivOwner: partner.riv_owner,
+    hasPortalLogin: !!partner.user_id,
+  }), opts);
 
 router.post("/startups/:id/provision-login", async (req, res, next) => {
   try {
@@ -265,6 +379,7 @@ router.post("/startups/:id/provision-login", async (req, res, next) => {
     const startup = startupRows[0];
     if (!startup) return res.status(404).json({ error: "Startup not found." });
 
+    const firstTime = startup.portal_login_status !== "Provisioned";
     const password_hash = bcrypt.hashSync(password, 10);
     const { rows: userRows } = await pool.query(
       `INSERT INTO users (email, password_hash, name, role, company) VALUES ($1,$2,$3,'startup',$4)
@@ -276,6 +391,7 @@ router.post("/startups/:id/provision-login", async (req, res, next) => {
       "UPDATE startups SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
       [req.params.id, userRows[0].id]
     );
+    if (firstTime) await notify.loginReady({ role: "startup", row: startup });
     res.json({ ok: true, email: startup.email });
   } catch (err) {
     next(err);
@@ -555,6 +671,7 @@ router.post("/introductions", async (req, res, next) => {
       [startupId, retailerId, retailer.network_source, context || null]
     );
     await notifyStartup(startupId, "New opportunity from RIV", rows[0].id);
+    await notify.newOpportunity(rows[0].id);
     res.status(201).json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -597,7 +714,10 @@ router.put("/introductions/:id/approve", async (req, res, next) => {
     }
     if (!intro.partner_id || intro.initiated_by === "Startup") {
       await notifyStartup(intro.startup_id, "Status updated", intro.id);
+      await notify.requestApproved(intro.id);
     }
+    // A partner on a startup-initiated request can make the introduction now.
+    if (nextStatus === "Startup Confirmed" && intro.partner_id) await notify.partnerGoAhead(intro.id);
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -618,6 +738,7 @@ router.put("/introductions/:id/reject", async (req, res, next) => {
       [req.params.id, req.user.name]
     );
     await notifyStartup(intro.startup_id, "Status updated", intro.id);
+    await notify.requestRejected(intro.id);
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -654,6 +775,8 @@ router.put("/introductions/:id/log-riv-proof", handleProofAttachmentUpload, asyn
       [req.params.id, channel || "Email", introductionDate || null, rivProofAttachment.name, JSON.stringify(rivProofAttachment), req.user.name]
     );
     await notifyStartup(intro.startup_id, "Introduction made", intro.id);
+    // Re-logging proof on an already-logged introduction shouldn't email again.
+    if (intro.approval_status !== "Proof Recorded") await notify.introductionMade(intro.id);
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -706,6 +829,9 @@ router.put("/introductions/:id", async (req, res, next) => {
       }
     }
 
+    const { rows: priorRows } = await pool.query("SELECT approval_status, partner_id FROM introductions WHERE id = $1", [req.params.id]);
+    const prior = priorRows[0];
+
     // Rate lock at Closed-Won (18 Sep 2026 admin requirement): when this
     // override is the one moving a GTM-Partner-initiated introduction to
     // Closed-Won (RIV Direct introductions have no login to log a sale
@@ -740,6 +866,10 @@ router.put("/introductions/:id", async (req, res, next) => {
        partnerFeePct, partnerFeeAmount, f.startupCommitStatus || null]
     );
     if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
+    // Admin's manual "Mark Startup Confirmed": tell the GTM partner to go ahead.
+    if (f.approvalStatus === "Startup Confirmed" && prior?.approval_status !== "Startup Confirmed" && rows[0].partner_id) {
+      await notify.partnerGoAhead(rows[0].id);
+    }
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -772,6 +902,7 @@ router.post("/invoices", async (req, res, next) => {
       await pool.query("UPDATE introductions SET invoice_id = $2, status = 'Invoiced', updated_at = now(), updated_by = $3 WHERE id = ANY($1::int[])", [ids, rows[0].id, req.user.name]);
     }
     await notifyStartup(startupId, "Invoice issued", ids[0] || null);
+    await notify.invoiceIssued(rows[0]);
     res.status(201).json({ invoice: rows[0] });
   } catch (err) {
     next(err);
@@ -781,6 +912,7 @@ router.post("/invoices", async (req, res, next) => {
 router.put("/invoices/:id", async (req, res, next) => {
   try {
     const { status, paidDate } = req.body || {};
+    const { rows: priorInvoiceRows } = await pool.query("SELECT status FROM invoices WHERE id = $1", [req.params.id]);
     const { rows } = await pool.query(
       `UPDATE invoices SET status = COALESCE($2, status), paid_date = COALESCE($3, paid_date) WHERE id = $1 RETURNING *`,
       [req.params.id, status || null, paidDate || null]
@@ -791,6 +923,8 @@ router.put("/invoices/:id", async (req, res, next) => {
       await pool.query("UPDATE introductions SET status = 'Paid', updated_at = now(), updated_by = $2 WHERE id = ANY($1::int[])", [invoice.related_introduction_ids, req.user.name]);
       await notifyStartup(invoice.startup_id, "Payment received", invoice.related_introduction_ids[0]);
     }
+    // Only the transition INTO Paid emails the startup, never a re-save.
+    if (status === "Paid" && priorInvoiceRows[0]?.status !== "Paid") await notify.paymentReceived(invoice);
     res.json({ invoice });
   } catch (err) {
     next(err);
@@ -844,6 +978,7 @@ router.post("/payouts", async (req, res, next) => {
 router.put("/payouts/:id", async (req, res, next) => {
   try {
     const { status, payoutDate, paymentReference } = req.body || {};
+    const { rows: priorPayoutRows } = await pool.query("SELECT status FROM payouts WHERE id = $1", [req.params.id]);
     const { rows } = await pool.query(
       `UPDATE payouts SET status = COALESCE($2, status), payout_date = COALESCE($3, payout_date), payment_reference = COALESCE($4, payment_reference)
        WHERE id = $1 RETURNING *`,
@@ -854,6 +989,8 @@ router.put("/payouts/:id", async (req, res, next) => {
       await pool.query("UPDATE introductions SET status = 'Payout Complete', updated_at = now(), updated_by = $2 WHERE id = ANY($1::int[])", [rows[0].related_introduction_ids, req.user.name]);
       await notifyPartner(rows[0].partner_id, "Payout issued", rows[0].related_introduction_ids[0]);
     }
+    // Email when the payout is actually paid (not when it's first created).
+    if (status === "Paid" && priorPayoutRows[0]?.status !== "Paid") await notify.payoutIssued(rows[0]);
     res.json({ payout: rows[0] });
   } catch (err) {
     next(err);
