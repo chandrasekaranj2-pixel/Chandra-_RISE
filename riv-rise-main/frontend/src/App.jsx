@@ -539,6 +539,15 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     // GTM partner's flow dropped it (see CheckIntroductionInterestSection /
     // PartnerDashboardView, and the simplified 409 copy in portal.js).
     ...(isRivInitiated || isPartner ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status, intro.initiated_by)]]),
+    // 13 Nov 2026 leader feedback — the list page already shows a "RIV
+    // Approval Status" column (relabeled per-role, same as here: admin via
+    // approvalStatusForAdmin, startup via approvalStatusForStartup), but
+    // opening "View Details" on that same row showed no equivalent — only
+    // the unrelated "Introduction interest status" above. Adding it here so
+    // the detail view and the list view never disagree about where RIV's
+    // own decision stands. Not shown to a partner (they never saw the raw
+    // approval chain in this modal either — see the comment above).
+    ...(isPartner ? [] : [["RIV Approval Status", isAdmin ? approvalStatusForAdmin(intro.approval_status, intro) : approvalStatusForStartup(intro.approval_status)]]),
     ["Actual Introduction status", introducedStatusFor(intro.status, intro.engagement_stage)],
     ["Deal Status", intro.engagement_stage || "—"],
     ["Opportunity Value", opportunityMoney(intro.opportunity_value)],
@@ -598,6 +607,12 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
       )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        {/* 13 Nov 2026 leader feedback — "RIV Approved" (etc.) now shown as
+            its own badge right up here under the title, not just in the
+            "RIV Approval Status" row further down — same relabeling
+            per-role as that row and as the list page, just surfaced at
+            the top too so it's visible the instant the modal opens. */}
+        {!isPartner && <StatusBadge status={intro.approval_status} colors={APPROVAL_COLORS} label={isAdmin ? approvalStatusForAdmin(intro.approval_status, intro) : approvalStatusForStartup(intro.approval_status)} />}
         {!isPartner && <StatusBadge status={interestStatusFor(intro.approval_status, intro.initiated_by)} colors={INTEREST_STATUS_COLORS} />}
         <StatusBadge status={introducedStatusFor(intro.status, intro.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
         {intro.engagement_stage && <StatusBadge status={intro.engagement_stage} />}
