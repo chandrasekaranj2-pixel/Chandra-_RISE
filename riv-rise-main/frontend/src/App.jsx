@@ -68,8 +68,21 @@ function approvalStatusForStartup(approvalStatus) {
 // is untouched, so the Approve / Log Introduction logic keyed off the
 // literal "Startup Confirmed" string elsewhere in this file still works
 // exactly as before.
-function approvalStatusForAdmin(approvalStatus) {
-  if (approvalStatus === "Startup Confirmed") return "Introduction Approved";
+// 12 Nov 2026 leader feedback (defect 5) — "Startup Confirmed" used to
+// always read as "Introduction Approved" here, even for the RIV-Direct /
+// Startup-initiated paths where Approve lands straight on "Startup
+// Confirmed" (see admin.js's /approve route, skipGtmNotified) with no
+// separate "Mark Startup Confirmed" step ever happening. From RIV's side
+// that's just the Approve click, so it should read "RIV Approved" like the
+// GTM-Notified path does — "Introduction Approved" is kept only for the
+// GTM-partner-initiated path, where Startup Confirmed is reached via a
+// later, distinct admin action (Mark Startup Confirmed) and the extra label
+// still carries real information there. `intro` is optional so existing
+// call sites that only have the bare string still compile; pass the row
+// when available so this can tell the two paths apart.
+function approvalStatusForAdmin(approvalStatus, intro) {
+  const skippedGtmNotified = intro && (!intro.partner_id || intro.initiated_by === "Startup");
+  if (approvalStatus === "Startup Confirmed") return skippedGtmNotified ? "RIV Approved" : "Introduction Approved";
   if (approvalStatus === "GTM Notified") return "RIV Approved";
   return approvalStatus;
 }
@@ -158,7 +171,18 @@ const INTEREST_STATUS_COLORS = {
   "Startup interested": { bg: "#EFE9FB", fg: "#6B3FBF" },
   "Startup Not interested": { bg: "#FBEAEA", fg: BRAND.coralDark },
 };
-function interestStatusFor(approvalStatus) {
+// 12 Nov 2026 leader feedback (defects 4 & 6) — this field answers "has
+// the startup weighed in on a pairing someone ELSE proposed", which only
+// makes sense for a GTM-partner- or RIV-initiated row. A startup-initiated
+// row (they requested the retailer themselves) was falling through to the
+// same "Awaiting Startup interest" default as everyone else, which reads as
+// RIV/GTM waiting on a startup that in fact already asked for this —
+// effectively showing a self-initiated request as if it were GTM-initiated
+// and still pending the startup's say-so. `initiatedBy` is optional so
+// existing call sites without it keep their old behavior; pass it wherever
+// available so a startup's own request always reads as what it is.
+function interestStatusFor(approvalStatus, initiatedBy) {
+  if (initiatedBy === "Startup") return "Startup interested"; // they asked — RIV's decision is shown separately via approval_status
   if (approvalStatus === "Rejected") return "Startup Not interested";
   if (["Startup Confirmed", "Introduced", "Proof Recorded"].includes(approvalStatus)) return "Startup interested";
   return "Awaiting Startup interest"; // Pending RIV Approval, RIV Approved, GTM Notified, anything else
@@ -514,7 +538,7 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     // "Awaiting Startup interest" wording) is admin/startup-only now; the
     // GTM partner's flow dropped it (see CheckIntroductionInterestSection /
     // PartnerDashboardView, and the simplified 409 copy in portal.js).
-    ...(isRivInitiated || isPartner ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status)]]),
+    ...(isRivInitiated || isPartner ? [] : [["Introduction interest status", interestStatusFor(intro.approval_status, intro.initiated_by)]]),
     ["Actual Introduction status", introducedStatusFor(intro.status, intro.engagement_stage)],
     ["Deal Status", intro.engagement_stage || "—"],
     ["Opportunity Value", opportunityMoney(intro.opportunity_value)],
@@ -569,12 +593,12 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
           AdminRetailersView's retailer-duplicate banner style/copy). */}
       {isAdmin && intro.duplicate_of_introduction_id && (
         <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 10, padding: "10px 14px", marginBottom: 16, lineHeight: 1.6 }}>
-          <strong>Possible duplicate</strong> — {intro.startup_name} was already introduced to {intro.retailer_name} on {dateStr(intro.duplicate_of_request_date)}, currently {interestStatusFor(intro.duplicate_of_approval_status)} (Initiated by {initiatorLabel(intro.duplicate_of_initiated_by)}). Review before approving.
+          <strong>Possible duplicate</strong> — {intro.startup_name} was already introduced to {intro.retailer_name} on {dateStr(intro.duplicate_of_request_date)}, currently {interestStatusFor(intro.duplicate_of_approval_status, intro.duplicate_of_initiated_by)} (Initiated by {initiatorLabel(intro.duplicate_of_initiated_by)}). Review before approving.
         </div>
       )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        {!isPartner && <StatusBadge status={interestStatusFor(intro.approval_status)} colors={INTEREST_STATUS_COLORS} />}
+        {!isPartner && <StatusBadge status={interestStatusFor(intro.approval_status, intro.initiated_by)} colors={INTEREST_STATUS_COLORS} />}
         <StatusBadge status={introducedStatusFor(intro.status, intro.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
         {intro.engagement_stage && <StatusBadge status={intro.engagement_stage} />}
       </div>
@@ -2652,20 +2676,20 @@ function AdminIntroductionsView() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-              <StatusBadge status={interestStatusFor(i.approval_status)} colors={INTEREST_STATUS_COLORS} />
+              <StatusBadge status={interestStatusFor(i.approval_status, i.initiated_by)} colors={INTEREST_STATUS_COLORS} />
               <StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
             <span style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE" }}>Detail:</span>
-            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} label={approvalStatusForAdmin(i.approval_status)} />
+            <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} label={approvalStatusForAdmin(i.approval_status, i)} />
             <StatusBadge status={i.status} />
           </div>
           {/* item 13b — amber duplicate banner, mirroring
               AdminRetailersView's retailer-duplicate banner style. */}
           {i.duplicate_of_introduction_id && (
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#8A6D00", background: "#FFF9DB", borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
-              Possible duplicate — {i.startup_name} was already introduced to {i.retailer_name} on {dateStr(i.duplicate_of_request_date)}, currently {interestStatusFor(i.duplicate_of_approval_status)}. Review before approving.
+              Possible duplicate — {i.startup_name} was already introduced to {i.retailer_name} on {dateStr(i.duplicate_of_request_date)}, currently {interestStatusFor(i.duplicate_of_approval_status, i.duplicate_of_initiated_by)}. Review before approving.
             </div>
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
