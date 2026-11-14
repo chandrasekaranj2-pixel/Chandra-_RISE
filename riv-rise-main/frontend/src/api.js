@@ -173,6 +173,7 @@ export const api = {
   updatePartner: (id, payload) => request(`/admin/partners/${id}`, { method: "PUT", body: payload }),
   provisionPartnerLogin: (id, password) => request(`/admin/partners/${id}/provision-login`, { method: "POST", body: { password } }),
   deletePartner: (id) => request(`/admin/partners/${id}`, { method: "DELETE" }),
+  resendPartnerWelcome: (id) => request(`/admin/partners/${id}/send-welcome-email`, { method: "POST" }),
   listStartups: () => request("/admin/startups"),
   createStartup: (payload) => request("/admin/startups", { method: "POST", body: payload }),
   updateStartup: (id, payload) => request(`/admin/startups/${id}`, { method: "PUT", body: payload }),

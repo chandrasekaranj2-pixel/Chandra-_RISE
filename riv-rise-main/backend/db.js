@@ -344,6 +344,16 @@ async function initSchema() {
     -- reminder bookkeeping for New Opportunities a startup hasn't answered
     -- (see lib/reminders.js).
     ALTER TABLE partners ADD COLUMN IF NOT EXISTS welcome_email_sent_at TIMESTAMPTZ;
+
+    -- GTM partner application fields (Nov 2026 feedback). Current Organization
+    -- reuses partners.company and "Any other thoughts/notes" reuses
+    -- partners.notes; the rest are new.
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS city TEXT;
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS country TEXT;
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS designation TEXT;
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS partner_types TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS past_retail_organizations TEXT;
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS retail_expertise TEXT;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS reminder_count INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS last_reminder_at TIMESTAMPTZ;
 

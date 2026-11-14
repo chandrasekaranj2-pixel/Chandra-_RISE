@@ -8,6 +8,7 @@ import {
   api, getStoredUser, setSession, clearSession,
 } from "./api.js";
 import { BRAND } from "./brand.js";
+import { RETAIL_CATEGORIES, COUNTRIES, PARTNER_TYPES } from "./formOptions.js";
 
 // RISE Portal — GTM Partner Introduction Workflow & Startup Introduction
 // Request Workflow (PRD: "RISE Module", 10 Sep 2026). This is the root
@@ -233,14 +234,15 @@ function GhostButton({ children, onClick, style, icon: Icon, disabled }) {
 function Card({ children, style, onClick }) {
   return <div onClick={onClick} style={{ border: `1px solid ${BRAND.line}`, borderRadius: 14, background: "#fff", ...style }}>{children}</div>;
 }
-function Field({ label, children, required, hint, style }) {
+function Field({ label, children, required, hint, error, style }) {
   return (
     <label style={{ display: "block", marginBottom: 16, ...style }}>
       <div style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 600, color: BRAND.ink, marginBottom: 6 }}>
         {label}{required && <span style={{ color: BRAND.coral }}> *</span>}
       </div>
       {children}
-      {hint && <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginTop: 5 }}>{hint}</div>}
+      {error ? <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 5 }}>{error}</div>
+        : hint && <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginTop: 5 }}>{hint}</div>}
     </label>
   );
 }
@@ -248,6 +250,73 @@ const inputStyle = {
   width: "100%", fontFamily: FONT, fontSize: 13.5, padding: "10px 12px",
   borderRadius: 9, border: `1px solid ${BRAND.line}`, background: "#fff", color: BRAND.ink,
 };
+// ---- Shared form helpers (Nov 2026 field-change feedback) -----------------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const isEmailValid = (v) => EMAIL_RE.test(String(v || "").trim());
+function isUrlValid(v) {
+  try {
+    const u = new URL(String(v || "").trim());
+    return (u.protocol === "http:" || u.protocol === "https:") && u.hostname.includes(".");
+  } catch { return false; }
+}
+const filled = (v) => String(v ?? "").trim() !== "";
+
+// Searchable single-select country picker: a text input backed by a
+// <datalist>, so typing filters the list, but only a value that is actually
+// in COUNTRIES counts as valid (see isCountry).
+const isCountry = (v) => COUNTRIES.includes(v);
+function CountrySelect({ value, onChange, placeholder = "Start typing to search…" }) {
+  return (
+    <>
+      <input style={inputStyle} list="rise-countries" value={value} placeholder={placeholder} autoComplete="off" onChange={(e) => onChange(e.target.value)} />
+      <datalist id="rise-countries">{COUNTRIES.map((c) => <option key={c} value={c} />)}</datalist>
+    </>
+  );
+}
+
+// Multi-select as toggle chips (partner type).
+function ChipMultiSelect({ options, value, onChange }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      {options.map((o) => {
+        const on = value.includes(o);
+        return (
+          <button key={o} type="button" onClick={() => onChange(on ? value.filter((x) => x !== o) : [...value, o])} style={{
+            fontFamily: FONT, fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 999, cursor: "pointer",
+            border: `1px solid ${on ? BRAND.coral : BRAND.line}`, background: on ? BRAND.cream : "#fff", color: on ? BRAND.coral : "#7A756F",
+          }}>{o}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Radio group (e.g. Retailer Source).
+function RadioGroup({ options, value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+      {options.map((o) => (
+        <label key={o} style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: FONT, fontSize: 13.5, color: BRAND.ink, cursor: "pointer" }}>
+          <input type="radio" checked={value === o} onChange={() => onChange(o)} /> {o}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// Category select that keeps a legacy (pre-pick-list) value selectable, so
+// editing an old retailer doesn't silently blank its category.
+function CategorySelect({ value, onChange }) {
+  const legacy = value && !RETAIL_CATEGORIES.includes(value);
+  return (
+    <select style={inputStyle} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Select…</option>
+      {legacy && <option value={value}>{value} (legacy)</option>}
+      {RETAIL_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+    </select>
+  );
+}
+
 function ErrorBanner({ text }) {
   if (!text) return null;
   return (
@@ -405,7 +474,7 @@ function navItemsFor(role) {
     { id: "introductions-requested", label: "Retailer Introductions Requested" },
     { id: "introductions-initiated", label: "Retailer Introductions Initiated by RIV" },
   ] : [
-    { id: "overview", label: "Overview" }, { id: "partners", label: "Partners" }, { id: "startups", label: "Startups" },
+    { id: "overview", label: "Overview" }, { id: "partners", label: "GTM Partners" }, { id: "startups", label: "Startups" },
     { id: "retailers", label: "Retailers" }, { id: "introductions", label: "Introductions" },
     { id: "invoices", label: "Invoices" }, { id: "payouts", label: "Payouts" },
   ];
@@ -1864,7 +1933,7 @@ function AdminOverview({ onNavigate }) {
   if (error) return <ErrorBanner text={error} />;
   if (!summary) return <Spinner />;
   const cards = [
-    { label: "Partners", value: summary.counts.partners, icon: Users },
+    { label: "GTM Partners", value: summary.counts.partners, icon: Users },
     { label: "Startups", value: summary.counts.startups, icon: Briefcase },
     { label: "Retailers", value: summary.counts.retailers, icon: Building2 },
     { label: "Introductions", value: summary.counts.introductions, icon: Handshake },
@@ -1936,6 +2005,9 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   const [form, setForm] = useState({
     fullName: partner.full_name || "", company: partner.company || "", phone: partner.phone || "",
     linkedinUrl: partner.linkedin_url || "", region: partner.region || "",
+    city: partner.city || "", country: partner.country || "", designation: partner.designation || "",
+    partnerTypes: partner.partner_types || [], pastRetailOrganizations: partner.past_retail_organizations || "",
+    retailExpertise: partner.retail_expertise || "",
     onboardingStage: partner.onboarding_stage || "New", agreementLink: partner.agreement_link || "",
     agreementSignedDate: partner.agreement_signed_date ? partner.agreement_signed_date.slice(0, 10) : "",
     defaultPayoutSplit: partner.default_payout_split ?? "", revenueShareOverride: partner.revenue_share_override ?? "",
@@ -1947,25 +2019,36 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   async function save() {
     setError(""); setBusy(true);
     try {
-      await api.updatePartner(partner.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride });
-      await onSaved();
+      const result = await api.updatePartner(partner.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride });
+      await onSaved(result);
       onClose();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
 
   return (
-    <Modal title={`Edit ${partner.full_name}`} onClose={onClose} width={520}>
+    <Modal title={`Edit ${partner.full_name}`} onClose={onClose} width={560}>
       <ErrorBanner text={error} />
       <Field label="Email" hint="Login email — change by re-provisioning.">
         <input style={{ ...inputStyle, color: "#9B958F" }} value={partner.email} disabled />
       </Field>
-      <Field label="Full name"><input style={inputStyle} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
-      <Field label="Company"><input style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} /></Field>
+      <Field label="Full Name"><input style={inputStyle} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
       <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="City"><input style={inputStyle} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Field>
+      <Field label="Country"><CountrySelect value={form.country} onChange={(v) => setForm({ ...form, country: v })} /></Field>
       <Field label="LinkedIn URL"><input style={inputStyle} value={form.linkedinUrl} onChange={(e) => setForm({ ...form, linkedinUrl: e.target.value })} /></Field>
-      <Field label="Region"><input style={inputStyle} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></Field>
-      <Field label="Onboarding stage">
+      <Field label="Current Organization"><input style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} /></Field>
+      <Field label="Designation"><input style={inputStyle} value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} /></Field>
+      <Field label="Which best describes GTM Partner"><ChipMultiSelect options={PARTNER_TYPES} value={form.partnerTypes} onChange={(v) => setForm({ ...form, partnerTypes: v })} /></Field>
+      <Field label="Past retail organizations you worked for / actively associated with, and the role you played">
+        <textarea style={{ ...inputStyle, minHeight: 70 }} value={form.pastRetailOrganizations} onChange={(e) => setForm({ ...form, pastRetailOrganizations: e.target.value })} />
+      </Field>
+      <Field label="Expertise in the Retail industry">
+        <textarea style={{ ...inputStyle, minHeight: 70 }} value={form.retailExpertise} onChange={(e) => setForm({ ...form, retailExpertise: e.target.value })} />
+      </Field>
+      <Field label="Region (legacy)"><input style={inputStyle} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></Field>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>Onboarding &amp; commercial terms</div>
+      <Field label="Onboarding stage" hint="A welcome email goes to the GTM partner the first time this is set to Onboarded.">
         <select style={inputStyle} value={form.onboardingStage} onChange={(e) => setForm({ ...form, onboardingStage: e.target.value })}>
           <option>New</option><option>Agreement Sent</option><option>Signed</option><option>Onboarded</option>
         </select>
@@ -1982,18 +2065,37 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
           <option>Active</option><option>Inactive</option>
         </select>
       </Field>
-      <Field label="Notes"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+      <Field label="Any other thoughts / notes"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
       <PrimaryButton onClick={save} disabled={busy || !form.fullName} style={{ width: "100%" }}>Save changes</PrimaryButton>
     </Modal>
   );
+}
+
+const EMPTY_PARTNER_FORM = {
+  fullName: "", email: "", phone: "", city: "", country: "", linkedinUrl: "", company: "", designation: "",
+  partnerTypes: [], pastRetailOrganizations: "", retailExpertise: "", notes: "",
+};
+
+// What the welcome-email result from PUT /partners/:id (or the re-send route)
+// means for the admin. "sent" is a normal success; "skipped"/"failed" used to
+// pass silently, which is how a partner could be onboarded without anyone
+// noticing no email had gone out.
+function welcomeEmailNotice(result, email) {
+  switch (result) {
+    case "sent": return { kind: "ok", text: `Welcome email sent to ${email}.` };
+    case "skipped": return { kind: "warn", text: `Welcome email to ${email} was NOT sent: email isn't configured on the server (RESEND_API_KEY / EMAIL_FROM missing). Use "Resend welcome email" once it is.` };
+    case "failed": return { kind: "warn", text: `Welcome email to ${email} FAILED to send (the mail provider rejected it — usually an unverified sender domain or a bad API key; see the server logs). Use "Resend welcome email" once fixed.` };
+    default: return null;
+  }
 }
 
 function AdminPartnersView() {
   const [partners, setPartners] = useState(null);
   const [error, setError] = useState("");
   const [success, showSuccess] = useSuccessMessage();
+  const [warning, setWarning] = useState("");
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({ fullName: "", company: "", email: "", phone: "", region: "" });
+  const [form, setForm] = useState(EMPTY_PARTNER_FORM);
   const [provisioning, setProvisioning] = useState(null);
   const [pwField, setPwField] = useState("");
   // item 13 — guards against a double-click/double-submit on Provision
@@ -2001,16 +2103,29 @@ function AdminPartnersView() {
   // resulting portal_login_status flip) comes back and hides the button.
   const [provisionBusy, setProvisionBusy] = useState(false);
   const [editingPartner, setEditingPartner] = useState(null);
+  const [resendingId, setResendingId] = useState(null);
 
   const load = useCallback(() => api.listPartners().then((r) => setPartners(r.partners)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
+
+  // Nov 2026 feedback — mandatory: Full Name, Email, Phone, City, Country,
+  // partner type(s), past retail organizations, retail expertise. Optional:
+  // LinkedIn URL, Current Organization, Designation, notes.
+  const f = form;
+  const errors = {
+    email: filled(f.email) && !isEmailValid(f.email) ? "Enter a valid email address." : "",
+    country: filled(f.country) && !isCountry(f.country) ? "Pick a country from the list." : "",
+    linkedinUrl: filled(f.linkedinUrl) && !isUrlValid(f.linkedinUrl) ? "Enter a valid URL (https://…)." : "",
+  };
+  const formValid = filled(f.fullName) && isEmailValid(f.email) && filled(f.phone) && filled(f.city) && isCountry(f.country)
+    && f.partnerTypes.length > 0 && filled(f.pastRetailOrganizations) && filled(f.retailExpertise) && !errors.linkedinUrl;
 
   async function createPartner() {
     setError("");
     try {
       await api.createPartner(form);
       setShowNew(false);
-      setForm({ fullName: "", company: "", email: "", phone: "", region: "" });
+      setForm(EMPTY_PARTNER_FORM);
       load();
       showSuccess(`${form.fullName} was added as a new GTM partner.`);
     }
@@ -2023,22 +2138,55 @@ function AdminPartnersView() {
     catch (e) { setError(e.message); }
     finally { setProvisionBusy(false); }
   }
+  // Called by EditPartnerModal after a save; surfaces the welcome-email
+  // outcome (only present when the save moved the partner INTO Onboarded).
+  async function afterEdit(result) {
+    await load();
+    const notice = welcomeEmailNotice(result?.welcomeEmail, result?.partner?.email || "the partner");
+    if (!notice) return;
+    if (notice.kind === "ok") { setWarning(""); showSuccess(notice.text); } else setWarning(notice.text);
+  }
+  async function resendWelcome(p) {
+    setResendingId(p.id); setWarning("");
+    try {
+      const r = await api.resendPartnerWelcome(p.id);
+      const notice = welcomeEmailNotice(r.welcomeEmail, p.email);
+      if (notice?.kind === "ok") showSuccess(notice.text); else if (notice) setWarning(notice.text);
+      load();
+    } catch (e) { setWarning(e.message); }
+    finally { setResendingId(null); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
     <div>
       <SuccessBanner text={success} />
+      {warning && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "12px 16px", borderRadius: 12, background: "#FFF4E0", border: "1px solid #F3D9A6", marginBottom: 16 }}>
+          <AlertCircle size={15} color="#B8790A" style={{ marginTop: 2, flexShrink: 0 }} />
+          <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, flex: 1 }}>{warning}</div>
+          <button type="button" onClick={() => setWarning("")} style={{ border: "none", background: "transparent", cursor: "pointer" }}><X size={14} /></button>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
-        <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New partner</PrimaryButton>
+        <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New GTM Partner</PrimaryButton>
       </div>
       {!partners ? <Spinner /> : !partners.length ? (
-        <EmptyState icon={Users} title="No GTM partners yet" text="Add a partner to get started." />
+        <EmptyState icon={Users} title="No GTM partners yet" text="Add a GTM partner to get started." />
       ) : partners.map((p) => (
         <Card key={p.id} style={{ padding: 16, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{p.full_name}</div>
-            <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{p.email} · {p.company || "—"} · {p.region || "—"}</div>
-            <div style={{ fontFamily: FONT, fontSize: 11, color: "#B7B2AE", marginTop: 5 }}>Payout split {p.default_payout_split}% · Stage: {p.onboarding_stage} · Login: {p.portal_login_status}</div>
+            <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>
+              {p.email} · {p.company || "—"}{p.designation ? ` (${p.designation})` : ""} · {[p.city, p.country].filter(Boolean).join(", ") || p.region || "—"}
+            </div>
+            {p.partner_types?.length > 0 && (
+              <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#7A756F", marginTop: 4 }}>{p.partner_types.join(" · ")}</div>
+            )}
+            <div style={{ fontFamily: FONT, fontSize: 11, color: "#B7B2AE", marginTop: 5 }}>
+              Payout split {p.default_payout_split}% · Stage: {p.onboarding_stage} · Login: {p.portal_login_status}
+              {p.onboarding_stage === "Onboarded" && ` · Welcome email: ${p.welcome_email_sent_at ? "sent" : "not sent"}`}
+            </div>
             {/* item 11 (25 Sep 2026 batch) — inline metrics from GET
                 /admin/partners' new aggregate subqueries (admin.js). */}
             <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#7A756F", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -2047,8 +2195,13 @@ function AdminPartnersView() {
               <span>{money(p.fees_earned)} fees earned</span>
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
             <GhostButton onClick={() => setEditingPartner(p)}>Edit</GhostButton>
+            {p.onboarding_stage === "Onboarded" && (
+              <GhostButton onClick={() => resendWelcome(p)} disabled={resendingId === p.id}>
+                {resendingId === p.id ? "Sending…" : "Resend welcome email"}
+              </GhostButton>
+            )}
             {/* 3 Nov 2026 fix — reset-password path: the status gate used to hide
                 this entirely once portal_login_status === "Provisioned", leaving
                 no way to change an existing partner's password from the UI. The
@@ -2068,18 +2221,33 @@ function AdminPartnersView() {
         </Card>
       ))}
       {showNew && (
-        <Modal title="New GTM partner" onClose={() => setShowNew(false)}>
+        <Modal title="New GTM Partner" onClose={() => setShowNew(false)} width={560}>
           <ErrorBanner text={error} />
-          <Field label="Full name" required><input style={inputStyle} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
-          <Field label="Company"><input style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} /></Field>
-          <Field label="Email" required><input style={inputStyle} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
-          <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
-          <Field label="Region"><input style={inputStyle} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></Field>
-          <PrimaryButton onClick={createPartner} disabled={!form.fullName || !form.email} style={{ width: "100%" }}>Create partner</PrimaryButton>
+          <Field label="Full Name" required><input style={inputStyle} value={f.fullName} onChange={(e) => setForm({ ...f, fullName: e.target.value })} /></Field>
+          <Field label="Email" required error={errors.email}><input style={inputStyle} type="email" value={f.email} onChange={(e) => setForm({ ...f, email: e.target.value })} /></Field>
+          <Field label="Phone" required><input style={inputStyle} value={f.phone} placeholder="e.g. +91 98XXXXXXXX" onChange={(e) => setForm({ ...f, phone: e.target.value })} /></Field>
+          <Field label="City" required><input style={inputStyle} value={f.city} onChange={(e) => setForm({ ...f, city: e.target.value })} /></Field>
+          <Field label="Country" required error={errors.country}><CountrySelect value={f.country} onChange={(v) => setForm({ ...f, country: v })} /></Field>
+          <Field label="LinkedIn URL" error={errors.linkedinUrl}><input style={inputStyle} value={f.linkedinUrl} placeholder="https://www.linkedin.com/in/…" onChange={(e) => setForm({ ...f, linkedinUrl: e.target.value })} /></Field>
+          <Field label="Current Organization"><input style={inputStyle} value={f.company} onChange={(e) => setForm({ ...f, company: e.target.value })} /></Field>
+          <Field label="Designation"><input style={inputStyle} value={f.designation} onChange={(e) => setForm({ ...f, designation: e.target.value })} /></Field>
+          <Field label="Which best describes GTM Partner" required hint="Select all that apply.">
+            <ChipMultiSelect options={PARTNER_TYPES} value={f.partnerTypes} onChange={(v) => setForm({ ...f, partnerTypes: v })} />
+          </Field>
+          <Field label="Past retail organizations that you worked for / actively associated with, along with the role you played" required>
+            <textarea style={{ ...inputStyle, minHeight: 80 }} value={f.pastRetailOrganizations} onChange={(e) => setForm({ ...f, pastRetailOrganizations: e.target.value })} />
+          </Field>
+          <Field label="Expertise in the Retail industry" required>
+            <textarea style={{ ...inputStyle, minHeight: 80 }} value={f.retailExpertise} onChange={(e) => setForm({ ...f, retailExpertise: e.target.value })} />
+          </Field>
+          <Field label="Any other thoughts / notes">
+            <textarea style={{ ...inputStyle, minHeight: 60 }} value={f.notes} onChange={(e) => setForm({ ...f, notes: e.target.value })} />
+          </Field>
+          <PrimaryButton onClick={createPartner} disabled={!formValid} style={{ width: "100%" }}>Create GTM Partner</PrimaryButton>
         </Modal>
       )}
       {editingPartner && (
-        <EditPartnerModal partner={editingPartner} onClose={() => setEditingPartner(null)} onSaved={load} />
+        <EditPartnerModal partner={editingPartner} onClose={() => setEditingPartner(null)} onSaved={afterEdit} />
       )}
     </div>
   );
@@ -2385,31 +2553,29 @@ function EditRetailerModal({ retailer, partners, onClose, onSaved }) {
   return (
     <Modal title={`Edit ${retailer.brand || retailer.name}`} onClose={onClose} width={520}>
       <ErrorBanner text={error} />
-      <Field label="Name" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-      <Field label="Brand"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
+      <Field label="Retailer Name" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+      <Field label="Retailer Brand"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
       <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
-      <Field label="Category"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
-      <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
-      <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
-      <Field label="Network source">
-        <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
-          <option>RIV Direct</option><option>GTM Partner</option>
-        </select>
+      <Field label="Category"><CategorySelect value={form.category} onChange={(v) => setForm({ ...form, category: v })} /></Field>
+      <Field label="City"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+      <Field label="HQ Country"><CountrySelect value={form.hqCountry} onChange={(v) => setForm({ ...form, hqCountry: v })} /></Field>
+      <Field label="Retailer Source">
+        <RadioGroup options={["RIV Direct", "GTM Partner"]} value={form.networkSource} onChange={(v) => setForm({ ...form, networkSource: v, owningPartnerId: v === "GTM Partner" ? form.owningPartnerId : "" })} />
       </Field>
       {/* item 8 — relabeled "GTM partner" (was "Owning partner"), required
           whenever a retailer sits in a GTM partner's network. */}
       {form.networkSource === "GTM Partner" && (
-        <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
+        <Field label="GTM Partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
           <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
             <option value="">Select…</option>
             {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
           </select>
         </Field>
       )}
-      <Field label="Contact name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
-      <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
-      <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
-      <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+      <Field label="Retail Enterprise Contact Full Name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
+      <Field label="Contact Designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
+      <Field label="Contact Email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
+      <Field label="Contact Phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
       <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
       <Field label="Status">
         <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
@@ -2421,6 +2587,8 @@ function EditRetailerModal({ retailer, partners, onClose, onSaved }) {
   );
 }
 
+const EMPTY_RETAILER_FORM = { name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" };
+
 function AdminRetailersView() {
   const [retailers, setRetailers] = useState(null);
   const [partners, setPartners] = useState([]);
@@ -2428,10 +2596,20 @@ function AdminRetailersView() {
   const [success, showSuccess] = useSuccessMessage();
   const [showNew, setShowNew] = useState(false);
   const [tab, setTab] = useState("All");
-  const [form, setForm] = useState({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
+  const [form, setForm] = useState(EMPTY_RETAILER_FORM);
   const [editingRetailer, setEditingRetailer] = useState(null);
   // item 8 — GTM partner is mandatory once Network source is "GTM Partner".
   const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
+  // Nov 2026 feedback — every field mandatory EXCEPT Contact Phone; the
+  // 'Create retailer' button stays disabled until they are all valid.
+  const retailerErrors = {
+    website: filled(form.website) && !isUrlValid(form.website) ? "Enter a valid URL, e.g. https://www.reliancetrends.com" : "",
+    hqCountry: filled(form.hqCountry) && !isCountry(form.hqCountry) ? "Pick a country from the list." : "",
+    contactEmail: filled(form.contactEmail) && !isEmailValid(form.contactEmail) ? "Enter a valid email address." : "",
+  };
+  const retailerFormValid = filled(form.name) && filled(form.brand) && isUrlValid(form.website) && RETAIL_CATEGORIES.includes(form.category)
+    && filled(form.location) && isCountry(form.hqCountry) && !!form.networkSource && !gtmPartnerMissing
+    && filled(form.contactName) && filled(form.contactDesignation) && isEmailValid(form.contactEmail);
 
   const load = useCallback(() => api.listRetailersAdmin().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); api.listPartners().then((r) => setPartners(r.partners)).catch(() => {}); }, [load]);
@@ -2441,7 +2619,7 @@ function AdminRetailersView() {
     try {
       await api.createRetailer({ ...form, owningPartnerId: form.owningPartnerId || null });
       setShowNew(false);
-      setForm({ name: "", brand: "", website: "", hqCountry: "", category: "", location: "", networkSource: "RIV Direct", owningPartnerId: "", contactName: "", contactDesignation: "", contactEmail: "", contactPhone: "" });
+      setForm(EMPTY_RETAILER_FORM);
       load();
       showSuccess(`${form.brand || form.name} was added as a new retailer.`);
     } catch (e) { setError(e.message); }
@@ -2513,35 +2691,50 @@ function AdminRetailersView() {
         </Card>
       ))}
       {showNew && (
-        <Modal title="New retailer" onClose={() => setShowNew(false)}>
+        <Modal title="New retailer" onClose={() => setShowNew(false)} width={540}>
           <ErrorBanner text={error} />
-          <Field label="Name" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-          <Field label="Brand"><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
-          <Field label="Website"><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
-          <Field label="Category"><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
-          <Field label="Location"><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
-          <Field label="HQ country"><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
-          <Field label="Network source">
-            <select style={inputStyle} value={form.networkSource} onChange={(e) => setForm({ ...form, networkSource: e.target.value, owningPartnerId: e.target.value === "GTM Partner" ? form.owningPartnerId : "" })}>
-              <option>RIV Direct</option><option>GTM Partner</option>
-            </select>
+          <Field label="Retailer Name" required hint="Enterprise / parent retailer name">
+            <input style={inputStyle} value={form.name} placeholder="e.g., Reliance" onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
-          {/* item 8 (9 Oct 2026 batch) — relabeled "GTM partner" (was
-              "Owning partner") and made required whenever a retailer is
-              being added to a GTM partner's network, not just optional. */}
+          <Field label="Retailer Brand" required hint="Banner / brand name">
+            <input style={inputStyle} value={form.brand} placeholder="e.g., Reliance Trends" onChange={(e) => setForm({ ...form, brand: e.target.value })} />
+          </Field>
+          <Field label="Website" required error={retailerErrors.website}>
+            <input style={inputStyle} value={form.website} placeholder="e.g., https://www.reliancetrends.com" onChange={(e) => setForm({ ...form, website: e.target.value })} />
+          </Field>
+          <Field label="Category" required><CategorySelect value={form.category} onChange={(v) => setForm({ ...form, category: v })} /></Field>
+          <Field label="City" required>
+            <input style={inputStyle} value={form.location} placeholder="e.g., Mumbai" onChange={(e) => setForm({ ...form, location: e.target.value })} />
+          </Field>
+          <Field label="HQ Country" required error={retailerErrors.hqCountry}>
+            <CountrySelect value={form.hqCountry} placeholder="e.g., India — start typing to search" onChange={(v) => setForm({ ...form, hqCountry: v })} />
+          </Field>
+          <Field label="Retailer Source" required>
+            <RadioGroup options={["RIV Direct", "GTM Partner"]} value={form.networkSource} onChange={(v) => setForm({ ...form, networkSource: v, owningPartnerId: v === "GTM Partner" ? form.owningPartnerId : "" })} />
+          </Field>
+          {/* item 8 (9 Oct 2026 batch) — "GTM partner" is required whenever a
+              retailer is being added to a GTM partner's network. */}
           {form.networkSource === "GTM Partner" && (
-            <Field label="GTM partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
+            <Field label="GTM Partner" required hint={gtmPartnerMissing ? "Required for a GTM Partner–network retailer." : undefined}>
               <select style={inputStyle} value={form.owningPartnerId} onChange={(e) => setForm({ ...form, owningPartnerId: e.target.value })}>
                 <option value="">Select…</option>
                 {partners.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
               </select>
             </Field>
           )}
-          <Field label="Contact name"><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
-          <Field label="Contact designation"><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
-          <Field label="Contact email"><input style={inputStyle} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
-          <Field label="Contact phone"><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-          <PrimaryButton onClick={createRetailer} disabled={!form.name || gtmPartnerMissing} style={{ width: "100%" }}>Create retailer</PrimaryButton>
+          <Field label="Retail Enterprise Contact Full Name" required>
+            <input style={inputStyle} value={form.contactName} placeholder="e.g., John Smith" onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
+          </Field>
+          <Field label="Contact Designation" required>
+            <input style={inputStyle} value={form.contactDesignation} placeholder="e.g., CIO" onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} />
+          </Field>
+          <Field label="Contact Email" required error={retailerErrors.contactEmail}>
+            <input style={inputStyle} type="email" value={form.contactEmail} placeholder="e.g., name@company.com" onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} />
+          </Field>
+          <Field label="Contact Phone" hint="Optional">
+            <input style={inputStyle} value={form.contactPhone} placeholder="e.g., +91 98XXXXXXXX" onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} />
+          </Field>
+          <PrimaryButton onClick={createRetailer} disabled={!retailerFormValid} style={{ width: "100%" }}>Create retailer</PrimaryButton>
         </Modal>
       )}
       {editingRetailer && (
@@ -2671,7 +2864,7 @@ function AdminIntroductionsView() {
           <GhostButton onClick={() => setShowArchived((v) => !v)}>
             {showArchived ? "View Active" : "View Archived"}
           </GhostButton>
-          <PrimaryButton icon={Plus} onClick={() => setShowNewOpportunity(true)}>New Opportunity</PrimaryButton>
+          <PrimaryButton icon={Plus} onClick={() => setShowNewOpportunity(true)}>New Introduction</PrimaryButton>
         </div>
       </div>
       {showArchived && (
@@ -2754,7 +2947,7 @@ function AdminIntroductionsView() {
   );
 }
 
-// "New Opportunity" (24 Sep 2026 addendum, Scenario C) — RIV admin proposes
+// "New Introduction" (was "New Opportunity"; 24 Sep 2026 addendum, Scenario C) — RIV admin proposes
 // an opportunity directly to a startup for a RIV-Direct retailer (no GTM
 // partner in the loop). Retailer picker is deliberately limited to RIV
 // Direct retailers — a GTM-network pairing belongs in that partner's own
@@ -2789,7 +2982,7 @@ function NewOpportunityModal({ onClose, onCreated }) {
 
   const loading = !startups || !retailers;
   return (
-    <Modal title="New Opportunity" onClose={onClose} width={520}>
+    <Modal title="New Introduction" onClose={onClose} width={520}>
       <ErrorBanner text={error} />
       <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 14, lineHeight: 1.6 }}>
         Proposes this retailer to the startup directly — lands on "Startup Confirmed" right away (no GTM partner in the loop) and notifies the startup in-app.
@@ -2808,7 +3001,7 @@ function NewOpportunityModal({ onClose, onCreated }) {
               {retailers.map((r) => <option key={r.id} value={r.id}>{r.brand || r.name}</option>)}
             </select>
           </Field>
-          <Field label="Opportunity context" hint="Why this pairing, for the startup to see on View Details.">
+          <Field label="Introduction context" hint="Why this pairing, for the startup to see on View Details.">
             <textarea style={{ ...inputStyle, minHeight: 70 }} value={context} onChange={(e) => setContext(e.target.value)} />
           </Field>
           {!retailers.length && (
@@ -2816,7 +3009,7 @@ function NewOpportunityModal({ onClose, onCreated }) {
               No RIV-Direct retailers in the directory yet.
             </div>
           )}
-          <PrimaryButton onClick={submit} disabled={busy || !startupId || !retailerId} style={{ width: "100%" }}>Create opportunity</PrimaryButton>
+          <PrimaryButton onClick={submit} disabled={busy || !startupId || !retailerId} style={{ width: "100%" }}>Create introduction</PrimaryButton>
         </>
       )}
     </Modal>
