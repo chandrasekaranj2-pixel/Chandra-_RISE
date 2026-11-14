@@ -11,6 +11,8 @@ const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMateri
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
 const { sendStartupWelcomeEmail, sendPartnerWelcomeEmail } = require("../lib/email.js");
 const notify = require("../lib/notify.js");
+const { RETAIL_CATEGORIES, COUNTRIES, PARTNER_TYPES } = require("../lib/formOptions.js");
+const { isEmail, isUrl, blank, missingFields } = require("../lib/validate.js");
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -85,14 +87,36 @@ router.get("/partners", async (req, res, next) => {
   }
 });
 
+// "New GTM Partner" — field rules per the Nov 2026 feedback sheet. Mandatory:
+// Full Name, Email, Phone, City, Country, partner type(s), past retail
+// organizations + role, retail expertise. Optional: LinkedIn URL, Current
+// Organization, Designation, notes. Current Organization is stored in the
+// existing `company` column and notes in `notes`.
 router.post("/partners", async (req, res, next) => {
   try {
-    const { fullName, company, email, phone, linkedinUrl, sectorFocus, region, riv_owner } = req.body || {};
-    if (!fullName || !email) return res.status(400).json({ error: "fullName and email are required." });
+    const {
+      fullName, email, phone, city, country, linkedinUrl, company, designation,
+      partnerTypes, pastRetailOrganizations, retailExpertise, notes, riv_owner,
+    } = req.body || {};
+    const types = Array.isArray(partnerTypes) ? partnerTypes : [];
+    const missing = missingFields([
+      [fullName, "Full Name"], [email, "Email"], [phone, "Phone"], [city, "City"], [country, "Country"],
+      [types.length ? "x" : "", "Which best describes GTM Partner"],
+      [pastRetailOrganizations, "Past retail organizations & role"], [retailExpertise, "Expertise in the Retail industry"],
+    ]);
+    if (missing) return res.status(400).json({ error: missing });
+    if (!isEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
+    if (!COUNTRIES.includes(country)) return res.status(400).json({ error: "Select a country from the list." });
+    if (types.some((t) => !PARTNER_TYPES.includes(t))) return res.status(400).json({ error: "Select partner type(s) from the list." });
+    if (!blank(linkedinUrl) && !isUrl(linkedinUrl)) return res.status(400).json({ error: "Enter a valid LinkedIn URL (starting with https://)." });
     const { rows } = await pool.query(
-      `INSERT INTO partners (full_name, company, email, phone, linkedin_url, sector_focus, region, riv_owner)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [fullName, company || null, email, phone || null, linkedinUrl || null, sectorFocus || [], region || null, riv_owner || null]
+      `INSERT INTO partners
+         (full_name, email, phone, city, country, linkedin_url, company, designation, partner_types,
+          past_retail_organizations, retail_expertise, notes, riv_owner)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [fullName.trim(), email.trim(), phone.trim(), city.trim(), country, blank(linkedinUrl) ? null : linkedinUrl.trim(),
+       blank(company) ? null : company.trim(), blank(designation) ? null : designation.trim(), types,
+       pastRetailOrganizations.trim(), retailExpertise.trim(), blank(notes) ? null : notes.trim(), riv_owner || null]
     );
     res.status(201).json({ partner: rows[0] });
   } catch (err) {
@@ -112,12 +136,17 @@ router.put("/partners/:id", async (req, res, next) => {
          onboarding_stage = COALESCE($8, onboarding_stage), agreement_link = COALESCE($9, agreement_link),
          agreement_signed_date = COALESCE($10, agreement_signed_date), default_payout_split = COALESCE($11, default_payout_split),
          revenue_share_override = $12, riv_owner = COALESCE($13, riv_owner), status = COALESCE($14, status),
-         notes = COALESCE($15, notes), updated_at = now()
+         notes = COALESCE($15, notes),
+         city = COALESCE($16, city), country = COALESCE($17, country), designation = COALESCE($18, designation),
+         partner_types = COALESCE($19::text[], partner_types), past_retail_organizations = COALESCE($20, past_retail_organizations),
+         retail_expertise = COALESCE($21, retail_expertise), updated_at = now()
        WHERE id = $1 RETURNING *`,
       [
         req.params.id, f.fullName, f.company, f.phone, f.linkedinUrl, f.sectorFocus, f.region,
         f.onboardingStage, f.agreementLink, f.agreementSignedDate || null, f.defaultPayoutSplit === "" ? null : f.defaultPayoutSplit,
         f.revenueShareOverride === "" ? null : (f.revenueShareOverride ?? null), f.riv_owner, f.status, f.notes,
+        f.city, f.country, f.designation, Array.isArray(f.partnerTypes) ? f.partnerTypes : null,
+        f.pastRetailOrganizations, f.retailExpertise,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
@@ -424,21 +453,34 @@ router.get("/retailers", async (req, res, next) => {
   }
 });
 
+// "New Retailer" — every field mandatory EXCEPT Contact Phone (Nov 2026
+// feedback sheet). Category and HQ Country must come from the pick lists.
 router.post("/retailers", async (req, res, next) => {
   try {
     const {
       name, brand, website, hqCountry, category, location, networkSource, owningPartnerId,
       contactName, contactDesignation, contactEmail, contactPhone, riv_owner,
     } = req.body || {};
-    if (!name) return res.status(400).json({ error: "name is required." });
+    const missing = missingFields([
+      [name, "Retailer Name"], [brand, "Retailer Brand"], [website, "Website"], [category, "Category"],
+      [location, "City"], [hqCountry, "HQ Country"], [networkSource, "Retailer Source"],
+      [contactName, "Retail Enterprise Contact Full Name"], [contactDesignation, "Contact Designation"], [contactEmail, "Contact Email"],
+    ]);
+    if (missing) return res.status(400).json({ error: missing });
+    if (!isUrl(website)) return res.status(400).json({ error: "Enter a valid website URL (e.g. https://www.reliancetrends.com)." });
+    if (!isEmail(contactEmail)) return res.status(400).json({ error: "Enter a valid contact email address." });
+    if (!RETAIL_CATEGORIES.includes(category)) return res.status(400).json({ error: "Select a category from the list." });
+    if (!COUNTRIES.includes(hqCountry)) return res.status(400).json({ error: "Select an HQ country from the list." });
+    if (!["RIV Direct", "GTM Partner"].includes(networkSource)) return res.status(400).json({ error: "Retailer Source must be RIV Direct or GTM Partner." });
+    if (networkSource === "GTM Partner" && !owningPartnerId) return res.status(400).json({ error: "Select the GTM partner for a GTM Partner–network retailer." });
     const { rows } = await pool.query(
       `INSERT INTO retailers
          (name, brand, website, hq_country, category, location, network_source, owning_partner_id,
           contact_name, contact_designation, contact_email, contact_phone, riv_owner)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-      [name, brand || null, website || null, hqCountry || null, category || null, location || null,
-       networkSource || "RIV Direct", owningPartnerId || null, contactName || null, contactDesignation || null,
-       contactEmail || null, contactPhone || null, riv_owner || null]
+      [name.trim(), brand.trim(), website.trim(), hqCountry, category, location.trim(),
+       networkSource, networkSource === "GTM Partner" ? owningPartnerId : null, contactName.trim(), contactDesignation.trim(),
+       contactEmail.trim(), blank(contactPhone) ? null : contactPhone.trim(), riv_owner || null]
     );
     res.status(201).json({ retailer: rows[0] });
   } catch (err) {
@@ -642,7 +684,7 @@ router.post("/introductions", async (req, res, next) => {
     const retailer = retailerRows[0];
     if (!retailer) return res.status(404).json({ error: "Retailer not found." });
     if (retailer.network_source === "GTM Partner") {
-      return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Opportunity." });
+      return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Introduction." });
     }
 
     // 9 Oct 2026 batch, item 10 — this route had no duplicate-pairing check
