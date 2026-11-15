@@ -579,6 +579,24 @@ async function initSchema() {
     ALTER TABLE retailers ADD CONSTRAINT retailers_status_check
       CHECK (status IN ('Active in network','Prospect','In Process','Duplicate','Rejected')) NOT VALID;
   `);
+
+  // Passwordless login (Google / emailed sign-in link). Idempotent, safe every boot.
+  // password_hash becomes optional: accounts that only use Google or email
+  // links never have one. google_sub is Google's permanent account id, set on
+  // a user's first Google login. login_tokens holds hashed one-time links.
+  await pool.query(`
+    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS login_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_login_tokens_user ON login_tokens(user_id, created_at);
+  `);
 }
 
 module.exports = { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, SUPPORT_TYPES, initSchema };

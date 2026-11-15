@@ -63,6 +63,9 @@ async function requestMultipart(path, { method = "POST", formData }) {
 
 export const api = {
   login: (email, password) => request("/auth/login", { method: "POST", body: { email, password } }),
+  googleLogin: (credential) => request("/auth/google", { method: "POST", body: { credential } }),
+  requestLoginLink: (email) => request("/auth/login-link", { method: "POST", body: { email } }),
+  verifyLoginLink: (token) => request("/auth/login-link/verify", { method: "POST", body: { token } }),
   me: () => request("/auth/me"),
 
   getMe: () => request("/me"),
@@ -171,13 +174,13 @@ export const api = {
   listPartners: () => request("/admin/partners"),
   createPartner: (payload) => request("/admin/partners", { method: "POST", body: payload }),
   updatePartner: (id, payload) => request(`/admin/partners/${id}`, { method: "PUT", body: payload }),
-  provisionPartnerLogin: (id, password) => request(`/admin/partners/${id}/provision-login`, { method: "POST", body: { password } }),
+  provisionPartnerLogin: (id) => request(`/admin/partners/${id}/provision-login`, { method: "POST", body: {} }),
   deletePartner: (id) => request(`/admin/partners/${id}`, { method: "DELETE" }),
   resendPartnerWelcome: (id) => request(`/admin/partners/${id}/send-welcome-email`, { method: "POST" }),
   listStartups: () => request("/admin/startups"),
   createStartup: (payload) => request("/admin/startups", { method: "POST", body: payload }),
   updateStartup: (id, payload) => request(`/admin/startups/${id}`, { method: "PUT", body: payload }),
-  provisionStartupLogin: (id, password) => request(`/admin/startups/${id}/provision-login`, { method: "POST", body: { password } }),
+  provisionStartupLogin: (id) => request(`/admin/startups/${id}/provision-login`, { method: "POST", body: {} }),
   deleteStartup: (id) => request(`/admin/startups/${id}`, { method: "DELETE" }),
   listRetailersAdmin: () => request("/admin/retailers"),
   createRetailer: (payload) => request("/admin/retailers", { method: "POST", body: payload }),

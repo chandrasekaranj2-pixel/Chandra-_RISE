@@ -187,6 +187,27 @@ async function sendStartupWelcomeEmail({ to, founderName, startupName, rivOwner,
   return sendEmail({ to, subject, text, html, replyTo: adminNotifyEmail(), type: "startup-welcome" });
 }
 
+// One-time sign-in link (passwordless login). `link` is built server-side
+// from APP_URL — never from request headers.
+async function sendLoginLink({ to, name, link, ttlMinutes = 15 }) {
+  const subject = "Your RISE Portal sign-in link";
+  const text = `Hi ${name || "there"},
+
+Use this link to sign in to the RISE Portal:
+
+${link}
+
+It works once and expires in ${ttlMinutes} minutes. If you didn't ask for it, you can ignore this email — nobody can sign in without it.
+
+— RISE Portal (Retail Innovation Ventures)`;
+  const html = `<p>Hi ${escapeHtml(name) || "there"},</p>
+<p><a href="${escapeHtml(link)}" style="display:inline-block;background:#E5484D;color:#fff;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:9px">Sign in to RISE Portal</a></p>
+<p>Or paste this link into your browser:<br>${escapeHtml(link)}</p>
+<p>It works once and expires in ${ttlMinutes} minutes. If you didn't ask for it, you can ignore this email — nobody can sign in without it.</p>
+<p>— RISE Portal (Retail Innovation Ventures)</p>`;
+  return sendEmail({ to, subject, text, html });
+}
+
 
 // --- Shared layout for the notification emails --------------------------
 //
@@ -239,7 +260,7 @@ ${cta ? `<p><a href="${escapeHtml(cta.url)}">${escapeHtml(cta.label)}</a></p>` :
 const portalCta = (label = "Open the RISE Portal") => ({ label, url: `${appUrl()}/` });
 
 // --- 3. Portal login ready (startup or GTM partner) ---------------------
-// No password in the email, ever: the admin shares it separately.
+// Passwordless: no password exists. They sign in with Google or an emailed link.
 function buildLoginReady({ name, email, rivOwner, role }) {
   const doWhat = role === "partner"
     ? "submit retailers and log the introductions you make"
@@ -247,8 +268,8 @@ function buildLoginReady({ name, email, rivOwner, role }) {
   const { text, html } = layout({
     name,
     paragraphs: [
-      `Your RISE Portal account is set up. You can sign in at ${appUrl()}/ using ${email}.`,
-      `Your password was shared with you separately${rivOwner ? ` by ${rivOwner}` : ""}. We never send passwords by email.`,
+      `Your RISE Portal account is set up. Sign in at ${appUrl()}/ with Google, or request a one-time sign-in link, using ${email}.`,
+      `There's no password to remember or share.`,
       `Once you're in, you can ${doWhat}.`,
       "If anything doesn't work, just reply to this email.",
     ],
@@ -446,6 +467,7 @@ module.exports = {
   buildIntroductionRequestAck,
   buildStartupWelcome,
   adminNotifyEmail,
+  sendLoginLink,
   appUrl,
   safely,
   buildLoginReady,
