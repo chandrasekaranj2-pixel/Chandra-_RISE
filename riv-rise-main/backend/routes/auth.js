@@ -1,31 +1,41 @@
 const { Router } = require("express");
-const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
-const { OAuth2Client } = require("google-auth-library");
 const { pool } = require("../db.js");
-const { requireAuth, signToken } = require("../middleware/auth.js");
-const { sendLoginLink } = require("../lib/email.js");
+const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
+const { OAuth2Client } = require("google-auth-library");
+const { requireAuth, signToken, JWT_SECRET } = require("../middleware/auth.js");
 
 const router = Router();
 
-// Passwordless sign-in for the RISE Portal.
-//
-// RISE is invite-only: RIV admin creates a partner/startup (which creates the
-// `users` row on "Enable login"). Every method below only ever LOOKS UP an
-// existing user by verified email — none of them can create an account, so a
-// random Google account or random email address can't get in.
-//
-//   POST /api/auth/google           { credential }  Google ID token -> session
-//   POST /api/auth/login-link       { email }       emails a one-time link
-//   POST /api/auth/login-link/verify { token }      link token -> session
-//   POST /api/auth/login            { email, password }  legacy, can be turned
-//                                    off with ALLOW_PASSWORD_LOGIN=false
+router.post("/login", async (req, res, next) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: "Email and password are required." });
 
-const LINK_TTL_MINUTES = 15;
-const LINK_COOLDOWN_SECONDS = 60;
-const NO_ACCOUNT_MESSAGE =
-  "There's no RISE Portal account for this email. Ask RIV to enable your login, or try the email you were invited with.";
+    const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [String(email).toLowerCase().trim()]);
+    const user = rows[0];
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: "Incorrect email or password." });
+    }
 
+    const token = signToken(user);
+    res.json({
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Sign in / sign up with Google. The existing email + password login above
+// is unchanged. A new person signs in with Google, fills in a short profile
+// (GTM partner or startup) and lands on their dashboard. The email always
+// comes from Google's verified ID token, never from what the browser sends.
+// Set ALLOW_SELF_SIGNUP=false to stop new people creating accounts this way.
+// ---------------------------------------------------------------------------
 let googleClient = null;
 function getGoogleClient() {
   if (!process.env.GOOGLE_CLIENT_ID) return null;
@@ -33,24 +43,18 @@ function getGoogleClient() {
   return googleClient;
 }
 
-function normalizeEmail(email) {
-  return String(email || "").toLowerCase().trim();
-}
+const normalizeEmail = (e) => String(e || "").toLowerCase().trim();
+const cleanText = (v, max = 200) => String(v ?? "").trim().slice(0, max);
+const selfSignupEnabled = () => process.env.ALLOW_SELF_SIGNUP !== "false";
+const SUSPENDED_MSG = "This login has been suspended. Contact RIV.";
 
-function hashToken(token) {
-  return crypto.createHash("sha256").update(token).digest("hex");
-}
+// Google accounts have no password; users.password_hash is NOT NULL, so store
+// the hash of a random value nobody knows (password login can never match it).
+const unusablePasswordHash = () => bcrypt.hashSync(crypto.randomBytes(32).toString("hex"), 10);
 
-function publicUser(user) {
-  return { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company };
-}
+const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, company: u.company });
+const respondWithSession = (res, user) => res.json({ token: signToken(user), user: publicUser(user) });
 
-function respondWithSession(res, user) {
-  res.json({ token: signToken(user), user: publicUser(user) });
-}
-
-// A partner/startup RIV has suspended must not be able to sign in by any
-// method. Admins have no partner/startup row, so they're never suspended.
 async function isSuspended(user) {
   if (user.role === "admin") return false;
   const table = user.role === "partner" ? "partners" : "startups";
@@ -61,17 +65,61 @@ async function isSuspended(user) {
   return rows.length > 0;
 }
 
-async function findUserByEmail(email) {
-  const { rows } = await pool.query("SELECT * FROM users WHERE lower(email) = $1", [email]);
-  return rows[0] || null;
+// A suspended partner/startup with no login yet must not dodge the
+// suspension by signing up fresh.
+async function emailIsSuspended(email) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM partners WHERE lower(email) = $1 AND portal_login_status = 'Suspended'
+     UNION ALL
+     SELECT 1 FROM startups WHERE lower(email) = $1 AND portal_login_status = 'Suspended' LIMIT 1`,
+    [email]
+  );
+  return rows.length > 0;
 }
 
-// ---------- Google ----------
+// RIV may already have entered this person (no login yet). Google just
+// verified they own that email, so link to the existing record instead of
+// creating a duplicate.
+async function linkPreEnteredProfile(payload) {
+  const email = normalizeEmail(payload.email);
+  for (const { table, role } of [{ table: "partners", role: "partner" }, { table: "startups", role: "startup" }]) {
+    const { rows } = await pool.query(
+      `SELECT * FROM ${table} WHERE lower(email) = $1 AND user_id IS NULL AND portal_login_status <> 'Suspended' ORDER BY id LIMIT 1`,
+      [email]
+    );
+    const row = rows[0];
+    if (!row) continue;
+    const name = (role === "partner" ? row.full_name : row.founder_name || row.startup_name) || payload.name || email;
+    const company = role === "partner" ? row.company : row.startup_name;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows: userRows } = await client.query(
+        `INSERT INTO users (email, password_hash, name, role, company, google_sub) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [email, unusablePasswordHash(), name, role, company, payload.sub]
+      );
+      await client.query(
+        `UPDATE ${table} SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1 AND user_id IS NULL`,
+        [row.id, userRows[0].id]
+      );
+      await client.query("COMMIT");
+      return userRows[0];
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      if (err.code === "23505") return null;
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+  return null;
+}
+
+// POST /api/auth/google { credential } -> session, or { needsSignup, signupToken } for a new person
 router.post("/google", async (req, res, next) => {
   try {
     const { credential } = req.body || {};
     if (!credential) return res.status(400).json({ error: "Missing Google credential." });
-
     const client = getGoogleClient();
     if (!client) return res.status(503).json({ error: "Google sign-in isn't configured on the server." });
 
@@ -86,122 +134,98 @@ router.post("/google", async (req, res, next) => {
       return res.status(401).json({ error: "That Google account's email isn't verified." });
     }
 
-    const user = await findUserByEmail(normalizeEmail(payload.email));
-    if (!user) return res.status(403).json({ error: NO_ACCOUNT_MESSAGE });
+    const email = normalizeEmail(payload.email);
+    const { rows } = await pool.query("SELECT * FROM users WHERE lower(email) = $1", [email]);
+    let user = rows[0] || (await linkPreEnteredProfile(payload));
 
-    // First Google login binds this user to that Google account (`sub` is
-    // Google's permanent id, unlike email which can be re-assigned).
+    if (!user) {
+      if (!selfSignupEnabled()) return res.status(403).json({ error: "There's no RISE Portal account for this email. Ask RIV to set one up." });
+      if (await emailIsSuspended(email)) return res.status(403).json({ error: SUSPENDED_MSG });
+      const signupToken = jwt.sign(
+        { purpose: "signup", email, sub: payload.sub, name: payload.name || "" },
+        JWT_SECRET,
+        { expiresIn: "15m" }
+      );
+      return res.json({ needsSignup: true, signupToken, email, name: payload.name || "" });
+    }
+
+    // First Google login binds the user to that Google account (`sub` is
+    // permanent, unlike email which can be re-assigned).
     if (user.google_sub && user.google_sub !== payload.sub) {
       return res.status(403).json({ error: "This portal account is linked to a different Google account." });
     }
-    if (await isSuspended(user)) {
-      return res.status(403).json({ error: "This login has been suspended. Contact RIV." });
-    }
-    if (!user.google_sub) {
-      await pool.query("UPDATE users SET google_sub = $2 WHERE id = $1", [user.id, payload.sub]);
-    }
+    if (await isSuspended(user)) return res.status(403).json({ error: SUSPENDED_MSG });
+    if (!user.google_sub) await pool.query("UPDATE users SET google_sub = $2 WHERE id = $1", [user.id, payload.sub]);
     respondWithSession(res, user);
   } catch (err) {
     next(err);
   }
 });
 
-// ---------- Email sign-in link ----------
-// Always answers the same way whether or not the email has an account, so
-// this can't be used to find out who's registered.
-router.post("/login-link", async (req, res, next) => {
+// POST /api/auth/signup { signupToken, role, ... } — finishes self-signup.
+router.post("/signup", async (req, res, next) => {
   try {
-    const email = normalizeEmail(req.body?.email);
-    if (!email || !email.includes("@")) return res.status(400).json({ error: "Enter a valid email address." });
+    if (!selfSignupEnabled()) return res.status(403).json({ error: "Sign-up is closed. Ask RIV to set up your login." });
 
-    const generic = { ok: true, message: "If that email has a RISE Portal account, a sign-in link is on its way." };
-
-    const user = await findUserByEmail(email);
-    if (!user || (await isSuspended(user))) return res.json(generic);
-
-    const appUrl = process.env.APP_URL || (process.env.NODE_ENV === "production" ? "" : "http://localhost:5173");
-    if (!appUrl) {
-      // Never build the link from the request's Origin/Host header: that would
-      // let anyone get a valid sign-in link for someone else pointed at their
-      // own site.
-      console.error("APP_URL is not set — can't send a sign-in link.");
-      return res.json(generic);
-    }
-
-    const { rows: recent } = await pool.query(
-      `SELECT 1 FROM login_tokens WHERE user_id = $1 AND created_at > now() - ($2 || ' seconds')::interval LIMIT 1`,
-      [user.id, String(LINK_COOLDOWN_SECONDS)]
-    );
-    if (recent.length) return res.json(generic);
-
-    const token = crypto.randomBytes(32).toString("base64url");
-    await pool.query(
-      `INSERT INTO login_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, now() + ($3 || ' minutes')::interval)`,
-      [hashToken(token), user.id, String(LINK_TTL_MINUTES)]
-    );
-    pool.query("DELETE FROM login_tokens WHERE expires_at < now() - interval '1 day'").catch(() => {});
-
-    const link = `${appUrl.replace(/\/$/, "")}/?login_token=${token}`;
+    let claims;
     try {
-      const result = await sendLoginLink({ to: user.email, name: user.name, link, ttlMinutes: LINK_TTL_MINUTES });
-      if (result?.skipped && process.env.NODE_ENV !== "production") {
-        console.log(`[dev] Sign-in link for ${user.email}: ${link}`);
+      claims = jwt.verify(String(req.body?.signupToken || ""), JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: "Your sign-up session expired. Please sign in with Google again." });
+    }
+    if (claims.purpose !== "signup" || !claims.email || !claims.sub) {
+      return res.status(401).json({ error: "Your sign-up session expired. Please sign in with Google again." });
+    }
+    if (await emailIsSuspended(claims.email)) return res.status(403).json({ error: SUSPENDED_MSG });
+
+    const role = req.body?.role;
+    if (role !== "partner" && role !== "startup") {
+      return res.status(400).json({ error: "Choose whether you're a GTM partner or a startup." });
+    }
+    const phone = cleanText(req.body?.phone, 40) || null;
+    let name;
+    let company;
+    if (role === "partner") {
+      name = cleanText(req.body?.fullName);
+      company = cleanText(req.body?.company) || null;
+      if (!name) return res.status(400).json({ error: "Your name is required." });
+    } else {
+      name = cleanText(req.body?.founderName);
+      company = cleanText(req.body?.startupName);
+      if (!company) return res.status(400).json({ error: "Your startup's name is required." });
+      if (!name) return res.status(400).json({ error: "The founder's name is required." });
+    }
+
+    const client = await pool.connect();
+    let user;
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        `INSERT INTO users (email, password_hash, name, role, company, google_sub) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [claims.email, unusablePasswordHash(), name, role, company, claims.sub]
+      );
+      user = rows[0];
+      if (role === "partner") {
+        await client.query(
+          `INSERT INTO partners (user_id, full_name, company, email, phone, portal_login_status) VALUES ($1,$2,$3,$4,$5,'Provisioned')`,
+          [user.id, name, company, claims.email, phone]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO startups (user_id, startup_name, founder_name, email, phone, portal_login_status) VALUES ($1,$2,$3,$4,$5,'Provisioned')`,
+          [user.id, company, name, claims.email, phone]
+        );
       }
+      await client.query("COMMIT");
     } catch (err) {
-      console.error("Sign-in link email failed:", err.message);
+      await client.query("ROLLBACK").catch(() => {});
+      if (err.code === "23505") {
+        return res.status(409).json({ error: "This email already has an account. Go back and sign in with Google." });
+      }
+      throw err;
+    } finally {
+      client.release();
     }
-    res.json(generic);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// The emailed link opens the frontend (not this API), and the frontend POSTs
-// the token here. Using a POST means email-security scanners that pre-fetch
-// links can't accidentally use up the one-time token.
-router.post("/login-link/verify", async (req, res, next) => {
-  try {
-    const token = String(req.body?.token || "");
-    if (!token) return res.status(400).json({ error: "Missing sign-in token." });
-
-    // Single atomic statement: only one request can ever flip used_at.
-    const { rows } = await pool.query(
-      `UPDATE login_tokens SET used_at = now()
-       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
-       RETURNING user_id`,
-      [hashToken(token)]
-    );
-    if (!rows[0]) {
-      return res.status(401).json({ error: "This sign-in link has expired or was already used. Request a new one." });
-    }
-
-    const { rows: userRows } = await pool.query("SELECT * FROM users WHERE id = $1", [rows[0].user_id]);
-    const user = userRows[0];
-    if (!user) return res.status(401).json({ error: "This account no longer exists." });
-    if (await isSuspended(user)) return res.status(403).json({ error: "This login has been suspended. Contact RIV." });
-
-    respondWithSession(res, user);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ---------- Legacy password login (kept for the transition) ----------
-router.post("/login", async (req, res, next) => {
-  try {
-    if (process.env.ALLOW_PASSWORD_LOGIN === "false") {
-      return res.status(403).json({ error: "Password sign-in is turned off. Use Google or an email link." });
-    }
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: "Email and password are required." });
-
-    const user = await findUserByEmail(normalizeEmail(email));
-    // password_hash is NULL for accounts that only use Google / email links.
-    if (!user || !user.password_hash || !bcrypt.compareSync(password, user.password_hash)) {
-      return res.status(401).json({ error: "Incorrect email or password." });
-    }
-    if (await isSuspended(user)) return res.status(403).json({ error: "This login has been suspended. Contact RIV." });
-
     respondWithSession(res, user);
   } catch (err) {
     next(err);

@@ -38,4 +38,4 @@ function signToken(user) {
     { expiresIn: "7d" }
   );
 }
-module.exports = { requireAuth, requireAdmin, requireRole, signToken };
+module.exports = { requireAuth, requireAdmin, requireRole, signToken, JWT_SECRET };
