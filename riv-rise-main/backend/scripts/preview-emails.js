@@ -1,4 +1,4 @@
-// Renders the emails RISE sends to startups, using a sample "Test Startup"
+// Renders every email RISE sends (startups, GTM partners, the RIV inbox), using a sample "Test Startup"
 // — no database, and no real send unless you ask for one.
 //
 //   node scripts/preview-emails.js
@@ -14,7 +14,8 @@
 require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
 const fs = require("fs");
 const path = require("path");
-const { buildIntroductionRequestAck, buildStartupWelcome, adminNotifyEmail, sendEmail } = require("../lib/email.js");
+const E = require("../lib/email.js");
+const { buildIntroductionRequestAck, buildStartupWelcome, adminNotifyEmail, sendEmail } = E;
 
 const sample = {
   founderName: "Asha Rao",
@@ -25,6 +26,19 @@ const sample = {
 const mails = {
   "startup-welcome": buildStartupWelcome({ ...sample, hasPortalLogin: true }),
   "startup-welcome-no-login": buildStartupWelcome({ ...sample, hasPortalLogin: false }),
+  "login-ready-startup": E.buildLoginReady({ name: sample.founderName, email: "asha@example.com", rivOwner: sample.rivOwner, role: "startup" }),
+  "login-ready-partner": E.buildLoginReady({ name: "Pat Partner", email: "pat@example.com", rivOwner: sample.rivOwner, role: "partner" }),
+  "partner-welcome": E.buildPartnerWelcome({ partnerName: "Pat Partner", rivOwner: sample.rivOwner, hasPortalLogin: true }),
+  "new-opportunity": E.buildNewOpportunity({ founderName: sample.founderName, startupName: sample.startupName, retailerName: "Sample Retail Co", context: "Strong overlap with your grocery pilots." }),
+  "opportunity-reminder": E.buildOpportunityReminder({ founderName: sample.founderName, startupName: sample.startupName, retailerName: "Sample Retail Co", hasPortalLogin: true }),
+  "request-approved": E.buildRequestApproved({ founderName: sample.founderName, startupName: sample.startupName, retailerName: "Sample Retail Co" }),
+  "request-rejected": E.buildRequestRejected({ founderName: sample.founderName, startupName: sample.startupName, retailerName: "Sample Retail Co", rivOwner: sample.rivOwner }),
+  "partner-go-ahead": E.buildPartnerGoAhead({ partnerName: "Pat Partner", startupName: sample.startupName, retailerName: "Sample Retail Co" }),
+  "introduction-made": E.buildIntroductionMade({ founderName: sample.founderName, startupName: sample.startupName, retailerName: "Sample Retail Co", introductionDate: "2026-11-09", channel: "Email" }),
+  "invoice-issued": E.buildInvoiceIssued({ founderName: sample.founderName, startupName: sample.startupName, invoiceId: 12, amount: 1500, dueDate: "2026-12-01", retailers: "Sample Retail Co", rivOwner: sample.rivOwner }),
+  "payment-received": E.buildPaymentReceived({ founderName: sample.founderName, startupName: sample.startupName, invoiceId: 12, amount: 1500 }),
+  "payout-issued": E.buildPayoutIssued({ partnerName: "Pat Partner", amount: 700, retailers: "Sample Retail Co" }),
+  "riv-alert": E.buildRivAlert({ event: "Startup commit status: OK to introduce", startupName: sample.startupName, retailerName: "Sample Retail Co", detail: `${sample.startupName} responded "OK to introduce" on the Sample Retail Co opportunity.` }),
   "startup-acknowledgement": buildIntroductionRequestAck({
     founderName: sample.founderName,
     retailerName: "Sample Retail Co",

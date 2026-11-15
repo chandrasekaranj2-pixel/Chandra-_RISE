@@ -15,6 +15,7 @@ const { handleSupportingMaterialUpload } = require("../lib/supportingMaterialUpl
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
 const { uploadSupportingMaterial, uploadProofAttachment, getSignedUrl } = require("../lib/supportingMaterialStorage.js");
 const { sendIntroductionRequestAck } = require("../lib/email.js");
+const notifyEmail = require("../lib/notify.js");
 
 const router = Router();
 router.use(requireAuth);
@@ -487,6 +488,8 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
       [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null, supportType || "Intro Only"]
     );
     await notifyAdmins("New partner-initiated introduction", rows[0].id);
+    await notifyEmail.rivAlert(rows[0].id, "New partner-initiated introduction", (i) =>
+      `${i.partner_name || "A GTM partner"} has proposed introducing ${i.startup_name} to ${i.retailer_name}. It's waiting for RIV approval.`);
     res.status(201).json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
@@ -589,6 +592,10 @@ router.put("/introductions/:id/commit-status", requireRole("startup"), async (re
       [req.params.id, commitStatus, req.user.name, shouldAutoAdvance]
     );
     await notifyAdmins(`Startup commit status: ${commitStatus}`, req.params.id);
+    await notifyEmail.rivAlert(req.params.id, `Startup commit status: ${commitStatus}`, (i) =>
+      `${i.startup_name} responded "${commitStatus}" on the ${i.retailer_name} opportunity.`);
+    // Auto-advanced to Startup Confirmed with a GTM partner in the loop: tell them to go ahead.
+    if (shouldAutoAdvance && intro.partner_id) await notifyEmail.partnerGoAhead(req.params.id);
     res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);
@@ -617,6 +624,7 @@ router.put("/introductions/:id/confirm-request", requireRole("startup"), async (
     if (intro.partner_id) {
       const { rows: partnerUserRows } = await pool.query("SELECT user_id FROM partners WHERE id = $1", [intro.partner_id]);
       if (partnerUserRows[0]?.user_id) await notifyUserId(pool, "Status updated", req.params.id, partnerUserRows[0].user_id);
+      await notifyEmail.partnerGoAhead(req.params.id);
     }
     res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
@@ -694,6 +702,7 @@ router.put("/introductions/:id/log-introduction", requireRole("partner"), handle
       [req.params.id, channel || "Email", introductionDate || null, proofAttachment.name, JSON.stringify(proofAttachment), req.user.name]
     );
     await notify(pool, "Introduction made", req.params.id, "startup", intro.startup_id);
+    await notifyEmail.introductionMade(req.params.id);
     res.json({ introduction: publicIntro(rows[0]) });
   } catch (err) {
     next(err);

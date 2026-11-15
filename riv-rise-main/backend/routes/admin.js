@@ -9,7 +9,10 @@ const portalRoutes = require("./portal.js");
 const { computePartnerFee } = portalRoutes;
 const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMaterialStorage.js");
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
-const { sendStartupWelcomeEmail } = require("../lib/email.js");
+const { sendStartupWelcomeEmail, sendPartnerWelcomeEmail } = require("../lib/email.js");
+const notify = require("../lib/notify.js");
+const { RETAIL_CATEGORIES, COUNTRIES, PARTNER_TYPES } = require("../lib/formOptions.js");
+const { isEmail, isUrl, blank, missingFields } = require("../lib/validate.js");
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -84,14 +87,36 @@ router.get("/partners", async (req, res, next) => {
   }
 });
 
+// "New GTM Partner" — field rules per the Nov 2026 feedback sheet. Mandatory:
+// Full Name, Email, Phone, City, Country, partner type(s), past retail
+// organizations + role, retail expertise. Optional: LinkedIn URL, Current
+// Organization, Designation, notes. Current Organization is stored in the
+// existing `company` column and notes in `notes`.
 router.post("/partners", async (req, res, next) => {
   try {
-    const { fullName, company, email, phone, linkedinUrl, sectorFocus, region, riv_owner } = req.body || {};
-    if (!fullName || !email) return res.status(400).json({ error: "fullName and email are required." });
+    const {
+      fullName, email, phone, city, country, linkedinUrl, company, designation,
+      partnerTypes, pastRetailOrganizations, retailExpertise, notes, riv_owner,
+    } = req.body || {};
+    const types = Array.isArray(partnerTypes) ? partnerTypes : [];
+    const missing = missingFields([
+      [fullName, "Full Name"], [email, "Email"], [phone, "Phone"], [city, "City"], [country, "Country"],
+      [types.length ? "x" : "", "Which best describes GTM Partner"],
+      [pastRetailOrganizations, "Past retail organizations & role"], [retailExpertise, "Expertise in the Retail industry"],
+    ]);
+    if (missing) return res.status(400).json({ error: missing });
+    if (!isEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
+    if (!COUNTRIES.includes(country)) return res.status(400).json({ error: "Select a country from the list." });
+    if (types.some((t) => !PARTNER_TYPES.includes(t))) return res.status(400).json({ error: "Select partner type(s) from the list." });
+    if (!blank(linkedinUrl) && !isUrl(linkedinUrl)) return res.status(400).json({ error: "Enter a valid LinkedIn URL (starting with https://)." });
     const { rows } = await pool.query(
-      `INSERT INTO partners (full_name, company, email, phone, linkedin_url, sector_focus, region, riv_owner)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [fullName, company || null, email, phone || null, linkedinUrl || null, sectorFocus || [], region || null, riv_owner || null]
+      `INSERT INTO partners
+         (full_name, email, phone, city, country, linkedin_url, company, designation, partner_types,
+          past_retail_organizations, retail_expertise, notes, riv_owner)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [fullName.trim(), email.trim(), phone.trim(), city.trim(), country, blank(linkedinUrl) ? null : linkedinUrl.trim(),
+       blank(company) ? null : company.trim(), blank(designation) ? null : designation.trim(), types,
+       pastRetailOrganizations.trim(), retailExpertise.trim(), blank(notes) ? null : notes.trim(), riv_owner || null]
     );
     res.status(201).json({ partner: rows[0] });
   } catch (err) {
@@ -102,6 +127,8 @@ router.post("/partners", async (req, res, next) => {
 router.put("/partners/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage FROM partners WHERE id = $1", [req.params.id]);
+    const prevStage = prevRows[0]?.onboarding_stage;
     const { rows } = await pool.query(
       `UPDATE partners SET
          full_name = COALESCE($2, full_name), company = COALESCE($3, company), phone = COALESCE($4, phone),
@@ -109,16 +136,46 @@ router.put("/partners/:id", async (req, res, next) => {
          onboarding_stage = COALESCE($8, onboarding_stage), agreement_link = COALESCE($9, agreement_link),
          agreement_signed_date = COALESCE($10, agreement_signed_date), default_payout_split = COALESCE($11, default_payout_split),
          revenue_share_override = $12, riv_owner = COALESCE($13, riv_owner), status = COALESCE($14, status),
-         notes = COALESCE($15, notes), updated_at = now()
+         notes = COALESCE($15, notes),
+         city = COALESCE($16, city), country = COALESCE($17, country), designation = COALESCE($18, designation),
+         partner_types = COALESCE($19::text[], partner_types), past_retail_organizations = COALESCE($20, past_retail_organizations),
+         retail_expertise = COALESCE($21, retail_expertise), updated_at = now()
        WHERE id = $1 RETURNING *`,
       [
         req.params.id, f.fullName, f.company, f.phone, f.linkedinUrl, f.sectorFocus, f.region,
-        f.onboardingStage, f.agreementLink, f.agreementSignedDate, f.defaultPayoutSplit,
-        f.revenueShareOverride ?? null, f.riv_owner, f.status, f.notes,
+        f.onboardingStage, f.agreementLink, f.agreementSignedDate || null, f.defaultPayoutSplit === "" ? null : f.defaultPayoutSplit,
+        f.revenueShareOverride === "" ? null : (f.revenueShareOverride ?? null), f.riv_owner, f.status, f.notes,
+        f.city, f.country, f.designation, Array.isArray(f.partnerTypes) ? f.partnerTypes : null,
+        f.pastRetailOrganizations, f.retailExpertise,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
-    res.json({ partner: rows[0] });
+
+    // Welcome email (RIV -> GTM partner) on the transition INTO "Onboarded",
+    // same once-only rules as the startup welcome below.
+    let partner = rows[0];
+    let welcomeEmail;
+    if (partner.onboarding_stage === "Onboarded" && prevStage !== "Onboarded") {
+      welcomeEmail = await sendPartnerWelcomeOnce(partner);
+      if (welcomeEmail === "sent") partner = { ...partner, welcome_email_sent_at: new Date().toISOString() };
+    }
+    res.json({ partner, ...(welcomeEmail && welcomeEmail !== "already-sent" ? { welcomeEmail } : {}) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/partners/:id/send-welcome-email — manual re-send.
+router.post("/partners/:id/send-welcome-email", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM partners WHERE id = $1", [req.params.id]);
+    const partner = rows[0];
+    if (!partner) return res.status(404).json({ error: "Partner not found." });
+    if (partner.onboarding_stage !== "Onboarded") {
+      return res.status(400).json({ error: "The welcome email is sent once a partner is marked Onboarded." });
+    }
+    const welcomeEmail = await sendPartnerWelcomeOnce(partner, { force: true });
+    res.json({ ok: true, email: partner.email, welcomeEmail });
   } catch (err) {
     next(err);
   }
@@ -133,6 +190,9 @@ router.post("/partners/:id/provision-login", async (req, res, next) => {
     const partner = partnerRows[0];
     if (!partner) return res.status(404).json({ error: "Partner not found." });
 
+    // Only the FIRST provisioning gets the "login is ready" email; the same
+    // route can be re-run, which shouldn't email anyone again.
+    const firstTime = partner.portal_login_status !== "Provisioned";
     const { rows: userRows } = await pool.query(
       `INSERT INTO users (email, name, role, company) VALUES (lower($1),$2,'partner',$3)
        ON CONFLICT (email) DO UPDATE SET role = 'partner'
@@ -143,6 +203,7 @@ router.post("/partners/:id/provision-login", async (req, res, next) => {
       "UPDATE partners SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
       [req.params.id, userRows[0].id]
     );
+    if (firstTime) await notify.loginReady({ role: "partner", row: partner });
     res.json({ ok: true, email: partner.email });
   } catch (err) {
     next(err);
@@ -288,41 +349,52 @@ router.post("/startups/:id/send-welcome-email", async (req, res, next) => {
   }
 });
 
-// Sends the welcome email at most once per startup. The send is "claimed"
-// first with a conditional UPDATE (welcome_email_sent_at IS NULL), so two
-// admins saving at the same moment can't both send it. If the send doesn't
-// actually go out (mail not configured, or the provider errors) the claim
-// is released so a later attempt can still deliver it. `force` skips the
-// claim for the manual re-send route.
-async function sendWelcomeOnce(startup, { force = false } = {}) {
+// Sends a welcome email at most once per startup / partner. The send is
+// "claimed" first with a conditional UPDATE (welcome_email_sent_at IS NULL),
+// so two admins saving at the same moment can't both send it. If the send
+// doesn't actually go out (mail not configured, or the provider errors) the
+// claim is released so a later attempt can still deliver it. `force` skips
+// the claim for the manual re-send routes.
+async function claimAndSend(table, id, send, { force = false } = {}) {
   if (!force) {
     const claim = await pool.query(
-      "UPDATE startups SET welcome_email_sent_at = now() WHERE id = $1 AND welcome_email_sent_at IS NULL RETURNING id",
-      [startup.id]
+      `UPDATE ${table} SET welcome_email_sent_at = now() WHERE id = $1 AND welcome_email_sent_at IS NULL RETURNING id`,
+      [id]
     );
     if (!claim.rows[0]) return "already-sent";
   }
-  const release = () => (force ? null : pool.query("UPDATE startups SET welcome_email_sent_at = NULL WHERE id = $1", [startup.id]).catch(() => {}));
+  const release = () => (force ? null : pool.query(`UPDATE ${table} SET welcome_email_sent_at = NULL WHERE id = $1`, [id]).catch(() => {}));
   try {
-    const result = await sendStartupWelcomeEmail({
-      to: startup.email,
-      founderName: startup.founder_name,
-      startupName: startup.startup_name,
-      rivOwner: startup.riv_owner,
-      hasPortalLogin: !!startup.user_id,
-    });
+    const result = await send();
     if (result.skipped) {
       await release();
       return "skipped";
     }
-    if (force) await pool.query("UPDATE startups SET welcome_email_sent_at = now() WHERE id = $1", [startup.id]);
+    if (force) await pool.query(`UPDATE ${table} SET welcome_email_sent_at = now() WHERE id = $1`, [id]);
     return "sent";
   } catch (err) {
-    console.error("Startup welcome email failed:", err);
+    console.error("Welcome email failed:", err);
     await release();
     return "failed";
   }
 }
+
+const sendWelcomeOnce = (startup, opts) =>
+  claimAndSend("startups", startup.id, () => sendStartupWelcomeEmail({
+    to: startup.email,
+    founderName: startup.founder_name,
+    startupName: startup.startup_name,
+    rivOwner: startup.riv_owner,
+    hasPortalLogin: !!startup.user_id,
+  }), opts);
+
+const sendPartnerWelcomeOnce = (partner, opts) =>
+  claimAndSend("partners", partner.id, () => sendPartnerWelcomeEmail({
+    to: partner.email,
+    partnerName: partner.full_name,
+    rivOwner: partner.riv_owner,
+    hasPortalLogin: !!partner.user_id,
+  }), opts);
 
 router.post("/startups/:id/provision-login", async (req, res, next) => {
   try {
@@ -331,6 +403,7 @@ router.post("/startups/:id/provision-login", async (req, res, next) => {
     const startup = startupRows[0];
     if (!startup) return res.status(404).json({ error: "Startup not found." });
 
+    const firstTime = startup.portal_login_status !== "Provisioned";
     const { rows: userRows } = await pool.query(
       `INSERT INTO users (email, name, role, company) VALUES (lower($1),$2,'startup',$3)
        ON CONFLICT (email) DO UPDATE SET role = 'startup'
@@ -341,6 +414,7 @@ router.post("/startups/:id/provision-login", async (req, res, next) => {
       "UPDATE startups SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
       [req.params.id, userRows[0].id]
     );
+    if (firstTime) await notify.loginReady({ role: "startup", row: startup });
     res.json({ ok: true, email: startup.email });
   } catch (err) {
     next(err);
@@ -373,21 +447,34 @@ router.get("/retailers", async (req, res, next) => {
   }
 });
 
+// "New Retailer" — every field mandatory EXCEPT Contact Phone (Nov 2026
+// feedback sheet). Category and HQ Country must come from the pick lists.
 router.post("/retailers", async (req, res, next) => {
   try {
     const {
       name, brand, website, hqCountry, category, location, networkSource, owningPartnerId,
       contactName, contactDesignation, contactEmail, contactPhone, riv_owner,
     } = req.body || {};
-    if (!name) return res.status(400).json({ error: "name is required." });
+    const missing = missingFields([
+      [name, "Retailer Name"], [brand, "Retailer Brand"], [website, "Website"], [category, "Category"],
+      [location, "City"], [hqCountry, "HQ Country"], [networkSource, "Retailer Source"],
+      [contactName, "Retail Enterprise Contact Full Name"], [contactDesignation, "Contact Designation"], [contactEmail, "Contact Email"],
+    ]);
+    if (missing) return res.status(400).json({ error: missing });
+    if (!isUrl(website)) return res.status(400).json({ error: "Enter a valid website URL (e.g. https://www.reliancetrends.com)." });
+    if (!isEmail(contactEmail)) return res.status(400).json({ error: "Enter a valid contact email address." });
+    if (!RETAIL_CATEGORIES.includes(category)) return res.status(400).json({ error: "Select a category from the list." });
+    if (!COUNTRIES.includes(hqCountry)) return res.status(400).json({ error: "Select an HQ country from the list." });
+    if (!["RIV Direct", "GTM Partner"].includes(networkSource)) return res.status(400).json({ error: "Retailer Source must be RIV Direct or GTM Partner." });
+    if (networkSource === "GTM Partner" && !owningPartnerId) return res.status(400).json({ error: "Select the GTM partner for a GTM Partner–network retailer." });
     const { rows } = await pool.query(
       `INSERT INTO retailers
          (name, brand, website, hq_country, category, location, network_source, owning_partner_id,
           contact_name, contact_designation, contact_email, contact_phone, riv_owner)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-      [name, brand || null, website || null, hqCountry || null, category || null, location || null,
-       networkSource || "RIV Direct", owningPartnerId || null, contactName || null, contactDesignation || null,
-       contactEmail || null, contactPhone || null, riv_owner || null]
+      [name.trim(), brand.trim(), website.trim(), hqCountry, category, location.trim(),
+       networkSource, networkSource === "GTM Partner" ? owningPartnerId : null, contactName.trim(), contactDesignation.trim(),
+       contactEmail.trim(), blank(contactPhone) ? null : contactPhone.trim(), riv_owner || null]
     );
     res.status(201).json({ retailer: rows[0] });
   } catch (err) {
@@ -591,7 +678,7 @@ router.post("/introductions", async (req, res, next) => {
     const retailer = retailerRows[0];
     if (!retailer) return res.status(404).json({ error: "Retailer not found." });
     if (retailer.network_source === "GTM Partner") {
-      return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Opportunity." });
+      return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Introduction." });
     }
 
     // 9 Oct 2026 batch, item 10 — this route had no duplicate-pairing check
@@ -620,6 +707,7 @@ router.post("/introductions", async (req, res, next) => {
       [startupId, retailerId, retailer.network_source, context || null]
     );
     await notifyStartup(startupId, "New opportunity from RIV", rows[0].id);
+    await notify.newOpportunity(rows[0].id);
     res.status(201).json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -662,7 +750,10 @@ router.put("/introductions/:id/approve", async (req, res, next) => {
     }
     if (!intro.partner_id || intro.initiated_by === "Startup") {
       await notifyStartup(intro.startup_id, "Status updated", intro.id);
+      await notify.requestApproved(intro.id);
     }
+    // A partner on a startup-initiated request can make the introduction now.
+    if (nextStatus === "Startup Confirmed" && intro.partner_id) await notify.partnerGoAhead(intro.id);
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -683,6 +774,7 @@ router.put("/introductions/:id/reject", async (req, res, next) => {
       [req.params.id, req.user.name]
     );
     await notifyStartup(intro.startup_id, "Status updated", intro.id);
+    await notify.requestRejected(intro.id);
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -719,6 +811,8 @@ router.put("/introductions/:id/log-riv-proof", handleProofAttachmentUpload, asyn
       [req.params.id, channel || "Email", introductionDate || null, rivProofAttachment.name, JSON.stringify(rivProofAttachment), req.user.name]
     );
     await notifyStartup(intro.startup_id, "Introduction made", intro.id);
+    // Re-logging proof on an already-logged introduction shouldn't email again.
+    if (intro.approval_status !== "Proof Recorded") await notify.introductionMade(intro.id);
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -771,6 +865,9 @@ router.put("/introductions/:id", async (req, res, next) => {
       }
     }
 
+    const { rows: priorRows } = await pool.query("SELECT approval_status, partner_id FROM introductions WHERE id = $1", [req.params.id]);
+    const prior = priorRows[0];
+
     // Rate lock at Closed-Won (18 Sep 2026 admin requirement): when this
     // override is the one moving a GTM-Partner-initiated introduction to
     // Closed-Won (RIV Direct introductions have no login to log a sale
@@ -805,6 +902,10 @@ router.put("/introductions/:id", async (req, res, next) => {
        partnerFeePct, partnerFeeAmount, f.startupCommitStatus || null]
     );
     if (!rows[0]) return res.status(404).json({ error: "Introduction not found." });
+    // Admin's manual "Mark Startup Confirmed": tell the GTM partner to go ahead.
+    if (f.approvalStatus === "Startup Confirmed" && prior?.approval_status !== "Startup Confirmed" && rows[0].partner_id) {
+      await notify.partnerGoAhead(rows[0].id);
+    }
     res.json({ introduction: rows[0] });
   } catch (err) {
     next(err);
@@ -837,6 +938,7 @@ router.post("/invoices", async (req, res, next) => {
       await pool.query("UPDATE introductions SET invoice_id = $2, status = 'Invoiced', updated_at = now(), updated_by = $3 WHERE id = ANY($1::int[])", [ids, rows[0].id, req.user.name]);
     }
     await notifyStartup(startupId, "Invoice issued", ids[0] || null);
+    await notify.invoiceIssued(rows[0]);
     res.status(201).json({ invoice: rows[0] });
   } catch (err) {
     next(err);
@@ -846,6 +948,7 @@ router.post("/invoices", async (req, res, next) => {
 router.put("/invoices/:id", async (req, res, next) => {
   try {
     const { status, paidDate } = req.body || {};
+    const { rows: priorInvoiceRows } = await pool.query("SELECT status FROM invoices WHERE id = $1", [req.params.id]);
     const { rows } = await pool.query(
       `UPDATE invoices SET status = COALESCE($2, status), paid_date = COALESCE($3, paid_date) WHERE id = $1 RETURNING *`,
       [req.params.id, status || null, paidDate || null]
@@ -856,6 +959,8 @@ router.put("/invoices/:id", async (req, res, next) => {
       await pool.query("UPDATE introductions SET status = 'Paid', updated_at = now(), updated_by = $2 WHERE id = ANY($1::int[])", [invoice.related_introduction_ids, req.user.name]);
       await notifyStartup(invoice.startup_id, "Payment received", invoice.related_introduction_ids[0]);
     }
+    // Only the transition INTO Paid emails the startup, never a re-save.
+    if (status === "Paid" && priorInvoiceRows[0]?.status !== "Paid") await notify.paymentReceived(invoice);
     res.json({ invoice });
   } catch (err) {
     next(err);
@@ -909,6 +1014,7 @@ router.post("/payouts", async (req, res, next) => {
 router.put("/payouts/:id", async (req, res, next) => {
   try {
     const { status, payoutDate, paymentReference } = req.body || {};
+    const { rows: priorPayoutRows } = await pool.query("SELECT status FROM payouts WHERE id = $1", [req.params.id]);
     const { rows } = await pool.query(
       `UPDATE payouts SET status = COALESCE($2, status), payout_date = COALESCE($3, payout_date), payment_reference = COALESCE($4, payment_reference)
        WHERE id = $1 RETURNING *`,
@@ -919,6 +1025,8 @@ router.put("/payouts/:id", async (req, res, next) => {
       await pool.query("UPDATE introductions SET status = 'Payout Complete', updated_at = now(), updated_by = $2 WHERE id = ANY($1::int[])", [rows[0].related_introduction_ids, req.user.name]);
       await notifyPartner(rows[0].partner_id, "Payout issued", rows[0].related_introduction_ids[0]);
     }
+    // Email when the payout is actually paid (not when it's first created).
+    if (status === "Paid" && priorPayoutRows[0]?.status !== "Paid") await notify.payoutIssued(rows[0]);
     res.json({ payout: rows[0] });
   } catch (err) {
     next(err);
