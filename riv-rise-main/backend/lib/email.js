@@ -187,11 +187,35 @@ async function sendStartupWelcomeEmail({ to, founderName, startupName, rivOwner,
   return sendEmail({ to, subject, text, html, replyTo: adminNotifyEmail(), type: "startup-welcome" });
 }
 
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// One-time sign-in link (passwordless login). `link` is built server-side
+// from APP_URL — never from request headers.
+async function sendLoginLink({ to, name, link, ttlMinutes = 15 }) {
+  const subject = "Your RISE Portal sign-in link";
+  const text = `Hi ${name || "there"},
+
+Use this link to sign in to the RISE Portal:
+
+${link}
+
+It works once and expires in ${ttlMinutes} minutes. If you didn't ask for it, you can ignore this email — nobody can sign in without it.
+
+— RISE Portal (Retail Innovation Ventures)`;
+  const html = `<p>Hi ${escapeHtml(name) || "there"},</p>
+<p><a href="${escapeHtml(link)}" style="display:inline-block;background:#E5484D;color:#fff;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:9px">Sign in to RISE Portal</a></p>
+<p>Or paste this link into your browser:<br>${escapeHtml(link)}</p>
+<p>It works once and expires in ${ttlMinutes} minutes. If you didn't ask for it, you can ignore this email — nobody can sign in without it.</p>
+<p>— RISE Portal (Retail Innovation Ventures)</p>`;
+  return sendEmail({ to, subject, text, html });
+}
+
 module.exports = {
   sendEmail,
   sendIntroductionRequestAck,
   sendStartupWelcomeEmail,
   buildIntroductionRequestAck,
   buildStartupWelcome,
-  adminNotifyEmail,
-};
+  adminNotifyEmail, sendLoginLink };

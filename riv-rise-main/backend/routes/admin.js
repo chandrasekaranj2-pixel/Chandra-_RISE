@@ -128,19 +128,16 @@ router.put("/partners/:id", async (req, res, next) => {
 // RISE Portal login (PRD §6.1 step 5).
 router.post("/partners/:id/provision-login", async (req, res, next) => {
   try {
-    const { password } = req.body || {};
-    if (!password || String(password).length < 8) return res.status(400).json({ error: "A password of at least 8 characters is required." });
 
     const { rows: partnerRows } = await pool.query("SELECT * FROM partners WHERE id = $1", [req.params.id]);
     const partner = partnerRows[0];
     if (!partner) return res.status(404).json({ error: "Partner not found." });
 
-    const password_hash = bcrypt.hashSync(password, 10);
     const { rows: userRows } = await pool.query(
-      `INSERT INTO users (email, password_hash, name, role, company) VALUES ($1,$2,$3,'partner',$4)
-       ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'partner'
+      `INSERT INTO users (email, name, role, company) VALUES (lower($1),$2,'partner',$3)
+       ON CONFLICT (email) DO UPDATE SET role = 'partner'
        RETURNING id`,
-      [partner.email, password_hash, partner.full_name, partner.company]
+      [partner.email, partner.full_name, partner.company]
     );
     await pool.query(
       "UPDATE partners SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
@@ -329,19 +326,16 @@ async function sendWelcomeOnce(startup, { force = false } = {}) {
 
 router.post("/startups/:id/provision-login", async (req, res, next) => {
   try {
-    const { password } = req.body || {};
-    if (!password || String(password).length < 8) return res.status(400).json({ error: "A password of at least 8 characters is required." });
 
     const { rows: startupRows } = await pool.query("SELECT * FROM startups WHERE id = $1", [req.params.id]);
     const startup = startupRows[0];
     if (!startup) return res.status(404).json({ error: "Startup not found." });
 
-    const password_hash = bcrypt.hashSync(password, 10);
     const { rows: userRows } = await pool.query(
-      `INSERT INTO users (email, password_hash, name, role, company) VALUES ($1,$2,$3,'startup',$4)
-       ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'startup'
+      `INSERT INTO users (email, name, role, company) VALUES (lower($1),$2,'startup',$3)
+       ON CONFLICT (email) DO UPDATE SET role = 'startup'
        RETURNING id`,
-      [startup.email, password_hash, startup.founder_name || startup.startup_name, startup.startup_name]
+      [startup.email, startup.founder_name || startup.startup_name, startup.startup_name]
     );
     await pool.query(
       "UPDATE startups SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
