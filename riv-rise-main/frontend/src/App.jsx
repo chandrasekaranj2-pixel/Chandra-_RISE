@@ -566,11 +566,11 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     // 24 Sep 2026 addendum: admin-viewing-only, like the file list below.
     ...(isAdmin ? [["Supporting material (link)", intro.supporting_material_url]] : []),
     ["Opportunity context", intro.gtm_context_note],
-    // 7 Nov 2026 leader feedback — only meaningful for a GTM-partner-
-    // initiated pairing (the only flow that collects it); RIV-direct/
-    // startup-initiated rows carry the column's default and shouldn't show
-    // a value nobody actually chose.
-    ...(intro.initiated_by === "GTM Partner" ? [["Support type", intro.support_type]] : []),
+    // 7 Nov 2026 leader feedback, extended 16 Nov 2026 (defect 4) — only
+    // meaningful for GTM-partner- or RIV-Admin-initiated pairings (the only
+    // two flows that collect it); startup-initiated rows carry the
+    // column's default and shouldn't show a value nobody actually chose.
+    ...(["GTM Partner", "RIV Admin"].includes(intro.initiated_by) ? [["Support type", intro.support_type]] : []),
     ["How the partner introduced this", intro.how_introduced],
   ].filter(([, v]) => v);
   const proofRows = [
@@ -613,7 +613,17 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
             per-role as that row and as the list page, just surfaced at
             the top too so it's visible the instant the modal opens. */}
         {!isPartner && <StatusBadge status={intro.approval_status} colors={APPROVAL_COLORS} label={isAdmin ? approvalStatusForAdmin(intro.approval_status, intro) : approvalStatusForStartup(intro.approval_status)} />}
-        {!isPartner && <StatusBadge status={interestStatusFor(intro.approval_status, intro.initiated_by)} colors={INTEREST_STATUS_COLORS} />}
+        {/* 16 Nov 2026 CEO feedback (defect 1) — this badge was missing the
+            same isRivInitiated guard the "Introduction interest status" row
+            below already has. A RIV Admin "New Opportunity" lands directly
+            on approval_status='Startup Confirmed' at creation (admin.js) —
+            not because the startup actually responded, just because RIV is
+            both initiator and approver here — so interestStatusFor read
+            that as "Startup interested" the instant it was created, before
+            the startup had done anything. The real signal for a RIV-
+            initiated opportunity is startup_commit_status ("Not yet
+            responded" etc., shown further down), not this badge. */}
+        {!isPartner && !isRivInitiated && <StatusBadge status={interestStatusFor(intro.approval_status, intro.initiated_by)} colors={INTEREST_STATUS_COLORS} />}
         <StatusBadge status={introducedStatusFor(intro.status, intro.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
         {intro.engagement_stage && <StatusBadge status={intro.engagement_stage} />}
       </div>
@@ -2583,17 +2593,33 @@ function AdminIntroductionsView() {
   // item 12 (9 Oct 2026 batch) — "Active" (default) vs "Archived" toggle,
   // same two-state pattern as AdminRetailersView's own status filter.
   const [showArchived, setShowArchived] = useState(false);
+  // 16 Nov 2026 CEO feedback (defect 2) — a transient success banner so
+  // archiving/unarchiving is visibly confirmed, since the card itself
+  // disappears from view the moment the list reloads (it moves to the
+  // other tab) and there'd otherwise be no visible trace the action
+  // actually happened.
+  const [lastArchiveAction, setLastArchiveAction] = useState(null);
   const load = useCallback(() => api.listIntroductionsAdmin(filter || undefined, showArchived).then((r) => setIntros(r.introductions)).catch((e) => setError(e.message)), [filter, showArchived]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!lastArchiveAction) return;
+    const t = setTimeout(() => setLastArchiveAction(null), 4000);
+    return () => clearTimeout(t);
+  }, [lastArchiveAction]);
 
-  async function archive(id) {
+  // 16 Nov 2026 CEO feedback (defect 2) — Archive used to fire immediately
+  // with no confirmation; now takes the full intro row (not just the id)
+  // so the confirm prompt and the after-the-fact banner can both name the
+  // actual startup/retailer pairing being archived.
+  async function archive(i) {
+    if (!window.confirm(`Archive "${i.startup_name} → ${i.retailer_name}"? You can bring it back anytime from "View Archived".`)) return;
     setError("");
-    try { await api.archiveIntroductionAdmin(id); load(); }
+    try { await api.archiveIntroductionAdmin(i.id); setLastArchiveAction({ type: "Archived", label: `${i.startup_name} → ${i.retailer_name}` }); load(); }
     catch (e) { setError(e.message); }
   }
-  async function unarchive(id) {
+  async function unarchive(i) {
     setError("");
-    try { await api.unarchiveIntroductionAdmin(id); load(); }
+    try { await api.unarchiveIntroductionAdmin(i.id); setLastArchiveAction({ type: "Unarchived", label: `${i.startup_name} → ${i.retailer_name}` }); load(); }
     catch (e) { setError(e.message); }
   }
 
@@ -2679,6 +2705,14 @@ function AdminIntroductionsView() {
           Showing archived introductions. Archiving doesn't delete anything — unarchive to bring a record back into the active list.
         </div>
       )}
+      {/* 16 Nov 2026 CEO feedback (defect 2) — visible confirmation that an
+          archive/unarchive actually went through, since the card itself
+          vanishes from this list the moment it does. */}
+      {lastArchiveAction && (
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+          {lastArchiveAction.type} — {lastArchiveAction.label}
+        </div>
+      )}
       {!intros ? <Spinner /> : !visibleIntros.length ? (
         <EmptyState icon={Handshake} title={showArchived ? "Nothing archived" : "No introductions"} text={showArchived ? "Introductions you archive will show up here." : "Nothing matches this filter yet."} />
       ) : visibleIntros.map((i) => (
@@ -2698,7 +2732,16 @@ function AdminIntroductionsView() {
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
             <span style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE" }}>Detail:</span>
             <StatusBadge status={i.approval_status} colors={APPROVAL_COLORS} label={approvalStatusForAdmin(i.approval_status, i)} />
-            <StatusBadge status={i.status} />
+            {/* 16 Nov 2026 CEO feedback — a RIV Admin "New Opportunity" is
+                inserted with the legacy `status` column hardcoded to the
+                literal 'Approved' (admin.js), which just restates the
+                badge to its left ("RIV Approved", from approval_status) in
+                different words — confusing, not informative. Only
+                suppressing it for that exact redundant case; once `status`
+                moves on to something that actually reflects deal progress
+                (Introduced, In Progress, Closed - Won, etc.) it's shown
+                again as normal. */}
+            {!(i.initiated_by === "RIV Admin" && i.status === "Approved") && <StatusBadge status={i.status} />}
           </div>
           {/* item 13b — amber duplicate banner, mirroring
               AdminRetailersView's retailer-duplicate banner style. */}
@@ -2707,11 +2750,15 @@ function AdminIntroductionsView() {
               Possible duplicate — {i.startup_name} was already introduced to {i.retailer_name} on {dateStr(i.duplicate_of_request_date)}, currently {interestStatusFor(i.duplicate_of_approval_status, i.duplicate_of_initiated_by)}. Review before approving.
             </div>
           )}
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          {/* 16 Nov 2026 CEO feedback (defect 2) — wrapped in a bordered,
+              tinted box so these two actions stand out from the plain
+              status dropdowns below them, instead of reading as just more
+              ghost-style text. */}
+          <div style={{ display: "flex", gap: 8, marginTop: 10, padding: 8, border: "1px solid #EDE8E2", borderRadius: 10, background: "#FBFAF8" }}>
             <GhostButton onClick={() => setOpenIntroDetails(i)}>View Details</GhostButton>
             {i.archived_at
-              ? <GhostButton onClick={() => unarchive(i.id)}>Unarchive</GhostButton>
-              : <GhostButton onClick={() => archive(i.id)}>Archive</GhostButton>}
+              ? <GhostButton onClick={() => unarchive(i)}>Unarchive</GhostButton>
+              : <GhostButton onClick={() => archive(i)} style={{ borderColor: BRAND.coral, color: BRAND.coralDark }}>Archive</GhostButton>}
           </div>
           {i.approval_status === "Pending RIV Approval" && (
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -2738,6 +2785,15 @@ function AdminIntroductionsView() {
             </div>
           )}
           <div style={{ marginTop: 10 }}>
+            {/* 16 Nov 2026 CEO feedback (defect 3) — this dropdown had no
+                visible label at all, unlike Startup Commit Status right
+                above it. Labeling it "Deal Status" per the request; the
+                underlying field is still the legacy `status` column, not
+                engagement_stage (the field everywhere else in the app
+                calls "Deal Status") — flagged back to the CEO as a
+                follow-up rather than swapped, since that's a bigger change
+                with its own risk. */}
+            <div style={{ fontFamily: FONT, fontSize: 10.5, color: "#B7B2AE", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.3 }}>Deal Status</div>
             <select style={{ ...inputStyle, width: 260 }} value={i.status} onChange={(e) => setStatus(i.id, e.target.value)}>
               {Object.keys(STATUS_COLORS).map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
@@ -2767,6 +2823,10 @@ function NewOpportunityModal({ onClose, onCreated }) {
   const [startupId, setStartupId] = useState("");
   const [retailerId, setRetailerId] = useState("");
   const [context, setContext] = useState("");
+  // 16 Nov 2026 CEO feedback (defect 4) — same support_type flag the GTM
+  // partner's Check Introduction Interest form already has, reused as-is
+  // here rather than a separate field.
+  const [supportType, setSupportType] = useState("Intro Only");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -2780,7 +2840,7 @@ function NewOpportunityModal({ onClose, onCreated }) {
   async function submit() {
     setError(""); setBusy(true);
     try {
-      await api.createIntroductionAdmin({ startupId: Number(startupId), retailerId: Number(retailerId), context: context || undefined });
+      await api.createIntroductionAdmin({ startupId: Number(startupId), retailerId: Number(retailerId), context: context || undefined, supportType });
       await onCreated();
       onClose();
     } catch (err) { setError(err.message); }
@@ -2810,6 +2870,12 @@ function NewOpportunityModal({ onClose, onCreated }) {
           </Field>
           <Field label="Opportunity context" hint="Why this pairing, for the startup to see on View Details.">
             <textarea style={{ ...inputStyle, minHeight: 70 }} value={context} onChange={(e) => setContext(e.target.value)} />
+          </Field>
+          <Field label="Support type" hint="Intro Only — RIV makes the introduction and steps back. Intro + Closure Support — RIV stays involved helping drive the deal to close.">
+            <select style={inputStyle} value={supportType} onChange={(e) => setSupportType(e.target.value)}>
+              <option value="Intro Only">Intro Only</option>
+              <option value="Intro + Closure Support">Intro + Closure Support</option>
+            </select>
           </Field>
           {!retailers.length && (
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#B8790A", background: "#FFF4E0", borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>

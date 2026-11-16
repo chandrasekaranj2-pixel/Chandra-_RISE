@@ -3,7 +3,7 @@
 // visibility). Mounted at /api/admin, requireAdmin throughout.
 const { Router } = require("express");
 const bcrypt = require("bcryptjs");
-const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES } = require("../db.js");
+const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, SUPPORT_TYPES } = require("../db.js");
 const { requireAuth, requireAdmin } = require("../middleware/auth.js");
 const portalRoutes = require("./portal.js");
 const { computePartnerFee } = portalRoutes;
@@ -636,8 +636,18 @@ router.get("/introductions/:id/proof-attachment", async (req, res, next) => {
 // this route rejects one to avoid silently orphaning the partner.
 router.post("/introductions", async (req, res, next) => {
   try {
-    const { startupId, retailerId, context } = req.body || {};
+    const { startupId, retailerId, context, supportType } = req.body || {};
     if (!startupId || !retailerId) return res.status(400).json({ error: "startupId and retailerId are required." });
+    // 16 Nov 2026 CEO feedback (defect 4) — same Intro Only / Intro +
+    // Closure Support flag the GTM partner's Check Introduction Interest
+    // form already has (portal.js's createPartnerInitiatedIntroduction),
+    // now also on RIV Admin's own New Opportunity path. Shares the same
+    // support_type column/values rather than a separate field — falls back
+    // to the column's own default rather than rejecting an older client
+    // that doesn't send it.
+    if (supportType && !SUPPORT_TYPES.includes(supportType)) {
+      return res.status(400).json({ error: "Invalid support type." });
+    }
     const { rows: retailerRows } = await pool.query("SELECT network_source FROM retailers WHERE id = $1", [retailerId]);
     const retailer = retailerRows[0];
     if (!retailer) return res.status(404).json({ error: "Retailer not found." });
@@ -666,9 +676,9 @@ router.post("/introductions", async (req, res, next) => {
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO introductions (initiated_by, startup_id, retailer_id, network_source, status, approval_status, gtm_context_note)
-       VALUES ('RIV Admin', $1, $2, $3, 'Approved', 'Startup Confirmed', $4) RETURNING *`,
-      [startupId, retailerId, retailer.network_source, context || null]
+      `INSERT INTO introductions (initiated_by, startup_id, retailer_id, network_source, status, approval_status, gtm_context_note, support_type)
+       VALUES ('RIV Admin', $1, $2, $3, 'Approved', 'Startup Confirmed', $4, $5) RETURNING *`,
+      [startupId, retailerId, retailer.network_source, context || null, supportType || "Intro Only"]
     );
     await notifyStartup(startupId, "New opportunity from RIV", rows[0].id);
     await notify.newOpportunity(rows[0].id);
