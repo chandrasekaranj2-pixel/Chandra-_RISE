@@ -2221,7 +2221,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       <Field label="Current Organization"><input style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} /></Field>
       <Field label="Designation"><input style={inputStyle} value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} /></Field>
       <Field label="Which best describes GTM Partner"><ChipMultiSelect options={PARTNER_TYPES} value={form.partnerTypes} onChange={(v) => setForm({ ...form, partnerTypes: v })} /></Field>
-      <Field label="Past retail organizations you worked for / actively associated with, and the role you played">
+      <Field label="Past retail organizations the partner worked for / was actively associated with, and the role they played">
         <textarea style={{ ...inputStyle, minHeight: 70 }} value={form.pastRetailOrganizations} onChange={(e) => setForm({ ...form, pastRetailOrganizations: e.target.value })} />
       </Field>
       <Field label="Expertise in the Retail industry">
@@ -2439,7 +2439,7 @@ function AdminPartnersView() {
           <Field label="Which best describes GTM Partner" required hint="Select all that apply.">
             <ChipMultiSelect options={PARTNER_TYPES} value={f.partnerTypes} onChange={(v) => setForm({ ...f, partnerTypes: v })} />
           </Field>
-          <Field label="Past retail organizations that you worked for / actively associated with, along with the role you played" required>
+          <Field label="Past retail organizations the partner worked for / was actively associated with, along with the role they played" required>
             <textarea style={{ ...inputStyle, minHeight: 80 }} value={f.pastRetailOrganizations} onChange={(e) => setForm({ ...f, pastRetailOrganizations: e.target.value })} />
           </Field>
           <Field label="Expertise in the Retail industry" required>
@@ -2491,8 +2491,8 @@ function EditStartupModal({ startup, onClose, onSaved }) {
   async function save() {
     setError(""); setBusy(true);
     try {
-      await api.updateStartup(startup.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride, equityPct: form.equityPct === "" ? null : form.equityPct });
-      await onSaved();
+      const result = await api.updateStartup(startup.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride, equityPct: form.equityPct === "" ? null : form.equityPct });
+      await onSaved(result);
       onClose();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
@@ -2571,6 +2571,11 @@ function AdminStartupsView() {
   const [startups, setStartups] = useState(null);
   const [error, setError] = useState("");
   const [success, showSuccess] = useSuccessMessage();
+  // Nov 2026 fix — AdminPartnersView already surfaces whether the welcome
+  // email actually sent after an edit moves someone into "Onboarded"
+  // (afterEdit()/warning below); this view silently discarded that same
+  // result (onSaved={load}) and never told admin either way.
+  const [warning, setWarning] = useState("");
   const [showNew, setShowNew] = useState(false);
   const blankForm = {
     startupName: "", founderName: "", email: "", sector: "", solutionSummary: "",
@@ -2606,6 +2611,15 @@ function AdminStartupsView() {
     }
     catch (e) { setError(e.message); }
   }
+  // Called by EditStartupModal after a save; surfaces the welcome-email
+  // outcome (only present when the save moved the startup INTO Onboarded),
+  // same as AdminPartnersView's afterEdit().
+  async function afterEditStartup(result) {
+    await load();
+    const notice = welcomeEmailNotice(result?.welcomeEmail, result?.startup?.email || "the startup");
+    if (!notice) return;
+    if (notice.kind === "ok") { setWarning(""); showSuccess(notice.text); } else setWarning(notice.text);
+  }
   async function provision(s) {
     if (provisionBusy) return;
     setError(""); setProvisionBusy(true);
@@ -2631,6 +2645,13 @@ function AdminStartupsView() {
   return (
     <div>
       <SuccessBanner text={success} />
+      {warning && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "12px 16px", borderRadius: 12, background: "#FFF4E0", border: "1px solid #F3D9A6", marginBottom: 16 }}>
+          <AlertCircle size={15} color="#B8790A" style={{ marginTop: 2, flexShrink: 0 }} />
+          <div style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, flex: 1 }}>{warning}</div>
+          <button type="button" onClick={() => setWarning("")} style={{ border: "none", background: "transparent", cursor: "pointer" }}><X size={14} /></button>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New startup</PrimaryButton>
       </div>
@@ -2717,7 +2738,7 @@ function AdminStartupsView() {
         </Modal>
       )}
       {detailStartupId && <StartupDetailModal startupId={detailStartupId} onClose={() => setDetailStartupId(null)} />}
-      {editingStartup && <EditStartupModal startup={editingStartup} onClose={() => setEditingStartup(null)} onSaved={load} />}
+      {editingStartup && <EditStartupModal startup={editingStartup} onClose={() => setEditingStartup(null)} onSaved={afterEditStartup} />}
     </div>
   );
 }
