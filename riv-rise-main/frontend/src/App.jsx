@@ -2326,7 +2326,11 @@ function AdminPartnersView() {
   async function grantAccess(p) {
     if (provisionBusy) return;
     setError(""); setProvisionBusy(true);
-    try { await api.provisionPartnerLogin(p.id); await load(); }
+    try {
+      await api.provisionPartnerLogin(p.id);
+      await load();
+      showSuccess(`Portal access granted for ${p.full_name}. They'll get an email at ${p.email} with instructions to sign in with an email code.`);
+    }
     catch (e) { setError(e.message); }
     finally { setProvisionBusy(false); }
   }
@@ -2614,7 +2618,11 @@ function AdminStartupsView() {
   async function grantAccess(s) {
     if (provisionBusy) return;
     setError(""); setProvisionBusy(true);
-    try { await api.provisionStartupLogin(s.id); await load(); }
+    try {
+      await api.provisionStartupLogin(s.id);
+      await load();
+      showSuccess(`Portal access granted for ${s.startup_name}. They'll get an email at ${s.email} with instructions to sign in with an email code.`);
+    }
     catch (e) { setError(e.message); }
     finally { setProvisionBusy(false); }
   }
