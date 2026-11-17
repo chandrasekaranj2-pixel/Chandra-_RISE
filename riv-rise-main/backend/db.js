@@ -305,10 +305,24 @@ async function initSchema() {
       message TEXT
     );
 
+    -- Passwordless email sign-in (CEO request, Nov 2026) — a short-lived,
+    -- single-use numeric code sent to an email already on file (see
+    -- routes/auth.js). Not a session/token table — just the code itself.
+    CREATE TABLE IF NOT EXISTS login_codes (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_intros_partner ON introductions(partner_id);
     CREATE INDEX IF NOT EXISTS idx_intros_startup ON introductions(startup_id);
     CREATE INDEX IF NOT EXISTS idx_intros_retailer ON introductions(retailer_id);
     CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_user_id);
+    CREATE INDEX IF NOT EXISTS idx_login_codes_user ON login_codes(user_id);
   `);
 
   // Idempotent add-column for the updated_by field above — safe to run
@@ -344,16 +358,6 @@ async function initSchema() {
     -- reminder bookkeeping for New Opportunities a startup hasn't answered
     -- (see lib/reminders.js).
     ALTER TABLE partners ADD COLUMN IF NOT EXISTS welcome_email_sent_at TIMESTAMPTZ;
-
-    -- GTM partner application fields (Nov 2026 feedback). Current Organization
-    -- reuses partners.company and "Any other thoughts/notes" reuses
-    -- partners.notes; the rest are new.
-    ALTER TABLE partners ADD COLUMN IF NOT EXISTS city TEXT;
-    ALTER TABLE partners ADD COLUMN IF NOT EXISTS country TEXT;
-    ALTER TABLE partners ADD COLUMN IF NOT EXISTS designation TEXT;
-    ALTER TABLE partners ADD COLUMN IF NOT EXISTS partner_types TEXT[] NOT NULL DEFAULT '{}';
-    ALTER TABLE partners ADD COLUMN IF NOT EXISTS past_retail_organizations TEXT;
-    ALTER TABLE partners ADD COLUMN IF NOT EXISTS retail_expertise TEXT;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS reminder_count INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS last_reminder_at TIMESTAMPTZ;
 
@@ -578,13 +582,6 @@ async function initSchema() {
     ALTER TABLE retailers DROP CONSTRAINT IF EXISTS retailers_status_check;
     ALTER TABLE retailers ADD CONSTRAINT retailers_status_check
       CHECK (status IN ('Active in network','Prospect','In Process','Duplicate','Rejected')) NOT VALID;
-  `);
-
-  // Sign in / sign up with Google. google_sub is Google's permanent account id,
-  // set the first time a user signs in with Google. Additive and idempotent.
-  await pool.query(`
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL;
   `);
 }
 

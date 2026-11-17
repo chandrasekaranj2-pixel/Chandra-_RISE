@@ -465,14 +465,19 @@ function GoogleSignInButton({ onCredential, onError }) {
 function LoginView({ onAuthed }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  // Google sign-up: set when Google confirmed a brand-new person.
-  const [signup, setSignup] = useState(null);
-  const [role, setRole] = useState("");
-  const [form, setForm] = useState({ fullName: "", company: "", startupName: "", founderName: "", phone: "" });
-  const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  // "password" | "code-request" | "code-sent" — passwordless email sign-in
+  // (CEO request, Nov 2026). Google sign-in (below) is a third, independent
+  // way in, shown alongside whichever of these is active.
+  const [mode, setMode] = useState("password");
 
+  // Shared by password login, email-code login, and Google sign-in — all
+  // three return the same { token, user } shape from the backend. None of
+  // them ever creates a new account here: an email that isn't already a
+  // partner/startup/admin record (or one RIV admin deactivated) is rejected
+  // with a clear message — RIV decides who's on RISE, same as today.
   function finishLogin({ token, user }) {
     if (!["partner", "startup", "admin"].includes(user.role)) {
       throw new Error("This login doesn't have RISE Portal access.");
@@ -484,27 +489,9 @@ function LoginView({ onAuthed }) {
   async function handleGoogle(credential) {
     setError(""); setLoading(true);
     try {
-      const result = await api.googleLogin(credential);
-      if (result.needsSignup) {
-        setSignup(result);
-        setForm((f) => ({ ...f, fullName: result.name || "", founderName: result.name || "" }));
-        return;
-      }
-      finishLogin(result);
+      finishLogin(await api.googleLogin(credential));
     } catch (err) {
       setError(err.message || "Google sign-in failed.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function submitSignup(e) {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try {
-      finishLogin(await api.signup({ signupToken: signup.signupToken, role, ...form }));
-    } catch (err) {
-      setError(err.message || "Couldn't create your account.");
     } finally {
       setLoading(false);
     }
@@ -514,17 +501,43 @@ function LoginView({ onAuthed }) {
     e.preventDefault();
     setError(""); setLoading(true);
     try {
-      const { token, user } = await api.login(email.trim(), password);
-      if (!["partner", "startup", "admin"].includes(user.role)) {
-        throw new Error("This login doesn't have RISE Portal access.");
-      }
-      setSession(token, user);
-      onAuthed(user);
+      finishLogin(await api.login(email.trim(), password));
     } catch (err) {
       setError(err.message || "Login failed.");
     } finally {
       setLoading(false);
     }
+  }
+
+  async function sendCode(e) {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      await api.requestLoginCode(email.trim());
+      setMode("code-sent");
+    } catch (err) {
+      setError(err.message || "Couldn't send a code — please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function verifyCode(e) {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      finishLogin(await api.verifyLoginCode(email.trim(), code.trim()));
+    } catch (err) {
+      setError(err.message || "Couldn't verify that code.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function switchMode(next) {
+    setMode(next);
+    setError("");
+    setCode("");
   }
 
   return (
@@ -536,75 +549,80 @@ function LoginView({ onAuthed }) {
           <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginTop: 6 }}>Retail Innovation Scaling Engine</div>
         </div>
         <Card style={{ padding: 26 }}>
-          {signup ? (
-            <form onSubmit={submitSignup}>
+          {mode === "password" && (
+            <form onSubmit={submit}>
               <ErrorBanner text={error} />
-              <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: BRAND.ink, marginBottom: 4 }}>Welcome to RISE</div>
-              <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginBottom: 16 }}>
-                Signing up as {signup.email}. Tell us a little about you to finish.
-              </div>
-              <Field label="I am a" required>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {[["partner", "GTM partner"], ["startup", "Startup"]].map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setRole(value)}
-                      style={{
-                        flex: 1, padding: "10px 12px", cursor: "pointer", fontFamily: FONT, fontSize: 13, borderRadius: 8,
-                        border: `1px solid ${role === value ? BRAND.ink : BRAND.line}`,
-                        background: role === value ? BRAND.ink : "#fff", color: role === value ? "#fff" : BRAND.ink,
-                      }}
-                    >{label}</button>
-                  ))}
-                </div>
+              <Field label="Email" required>
+                <input style={inputStyle} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
               </Field>
-              {role === "partner" && (
-                <>
-                  <Field label="Your name" required><input style={inputStyle} value={form.fullName} onChange={setF("fullName")} required /></Field>
-                  <Field label="Company"><input style={inputStyle} value={form.company} onChange={setF("company")} /></Field>
-                </>
-              )}
-              {role === "startup" && (
-                <>
-                  <Field label="Startup name" required><input style={inputStyle} value={form.startupName} onChange={setF("startupName")} required /></Field>
-                  <Field label="Founder name" required><input style={inputStyle} value={form.founderName} onChange={setF("founderName")} required /></Field>
-                </>
-              )}
-              {role && (
-                <Field label="Phone"><input style={inputStyle} type="tel" value={form.phone} onChange={setF("phone")} /></Field>
-              )}
-              <PrimaryButton type="submit" disabled={loading || !role} style={{ width: "100%", padding: "12px 18px" }}>
-                {loading ? "Creating your account…" : "Continue to RISE"}
+              <Field label="Password" required>
+                <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              </Field>
+              <PrimaryButton type="submit" disabled={loading} style={{ width: "100%", padding: "12px 18px" }}>
+                {loading ? "Signing in…" : "Sign in"}
               </PrimaryButton>
-              <div style={{ textAlign: "center", marginTop: 12 }}>
-                <button type="button" onClick={() => { setSignup(null); setRole(""); setError(""); }} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F" }}>
-                  Use a different Google account
+              <div style={{ textAlign: "center", marginTop: 14 }}>
+                <button type="button" onClick={() => switchMode("code-request")} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
+                  Sign in with an email code instead
                 </button>
               </div>
             </form>
-          ) : (
+          )}
+          {mode === "code-request" && (
+            <form onSubmit={sendCode}>
+              <ErrorBanner text={error} />
+              <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginBottom: 16 }}>
+                We'll email you a one-time code — no password needed.
+              </div>
+              <Field label="Email" required>
+                <input style={inputStyle} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+              </Field>
+              <PrimaryButton type="submit" disabled={loading} style={{ width: "100%", padding: "12px 18px" }}>
+                {loading ? "Sending…" : "Send me a code"}
+              </PrimaryButton>
+              <div style={{ textAlign: "center", marginTop: 14 }}>
+                <button type="button" onClick={() => switchMode("password")} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
+                  Use password instead
+                </button>
+              </div>
+            </form>
+          )}
+          {mode === "code-sent" && (
+            <form onSubmit={verifyCode}>
+              <ErrorBanner text={error} />
+              <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginBottom: 16 }}>
+                We sent a 6-digit code to <strong>{email}</strong>. It expires in 10 minutes.
+              </div>
+              <Field label="Code" required>
+                <input
+                  style={{ ...inputStyle, letterSpacing: 4, fontSize: 18, textAlign: "center" }}
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  required
+                  autoFocus
+                />
+              </Field>
+              <PrimaryButton type="submit" disabled={loading || code.length !== 6} style={{ width: "100%", padding: "12px 18px" }}>
+                {loading ? "Verifying…" : "Verify and sign in"}
+              </PrimaryButton>
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
+                <button type="button" onClick={() => switchMode("code-request")} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
+                  Use a different email
+                </button>
+                <button type="button" onClick={sendCode} disabled={loading} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
+                  Resend code
+                </button>
+              </div>
+            </form>
+          )}
+          {GOOGLE_CLIENT_ID && mode !== "code-sent" && (
             <>
-              <form onSubmit={submit}>
-                <ErrorBanner text={error} />
-                <Field label="Email" required>
-                  <input style={inputStyle} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-                </Field>
-                <Field label="Password" required>
-                  <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-                </Field>
-                <PrimaryButton type="submit" disabled={loading} style={{ width: "100%", padding: "12px 18px" }}>
-                  {loading ? "Signing in…" : "Sign in"}
-                </PrimaryButton>
-              </form>
-              {GOOGLE_CLIENT_ID && (
-                <>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0", fontFamily: FONT, fontSize: 12, color: "#B7B2AE" }}>
-                    <div style={{ flex: 1, height: 1, background: BRAND.line }} /> or <div style={{ flex: 1, height: 1, background: BRAND.line }} />
-                  </div>
-                  <GoogleSignInButton onCredential={handleGoogle} onError={setError} />
-                </>
-              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0", fontFamily: FONT, fontSize: 12, color: "#B7B2AE" }}>
+                <div style={{ flex: 1, height: 1, background: BRAND.line }} /> or <div style={{ flex: 1, height: 1, background: BRAND.line }} />
+              </div>
+              <GoogleSignInButton onCredential={handleGoogle} onError={setError} />
             </>
           )}
         </Card>
@@ -2301,6 +2319,17 @@ function AdminPartnersView() {
     catch (e) { setError(e.message); }
     finally { setProvisionBusy(false); }
   }
+  // Nov 2026 — "Grant Portal Access": no password typed or shared. The
+  // partner signs in with a one-time email code from day one; see
+  // provision() above (still used by "Reset password" on an already-
+  // provisioned partner, for whoever prefers a password instead).
+  async function grantAccess(p) {
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionPartnerLogin(p.id); await load(); }
+    catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
+  }
   // Called by EditPartnerModal after a save; surfaces the welcome-email
   // outcome (only present when the save moved the partner INTO Onboarded).
   async function afterEdit(result) {
@@ -2369,15 +2398,24 @@ function AdminPartnersView() {
                 this entirely once portal_login_status === "Provisioned", leaving
                 no way to change an existing partner's password from the UI. The
                 backend route already upserts the password on re-provision, so we
-                just always show the control and relabel it when one already exists. */}
-            {provisioning === p.id ? (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
-              </div>
+                just always show the control and relabel it when one already exists.
+                Nov 2026 passwordless change: that control now only applies once
+                already provisioned ("Reset password", for whoever wants one). A
+                partner not yet provisioned gets a single "Grant Portal Access"
+                click instead — no password field, no password to share; see
+                grantAccess() above. */}
+            {p.portal_login_status === "Provisioned" ? (
+              provisioning === p.id ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
+                  <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
+                </div>
+              ) : (
+                <GhostButton onClick={() => setProvisioning(p.id)}>Reset password</GhostButton>
+              )
             ) : (
-              <GhostButton onClick={() => setProvisioning(p.id)}>
-                {p.portal_login_status === "Provisioned" ? "Reset password" : "Provision login"}
+              <GhostButton onClick={() => grantAccess(p)} disabled={provisionBusy}>
+                {provisionBusy ? "Granting…" : "Grant Portal Access"}
               </GhostButton>
             )}
           </div>
@@ -2571,6 +2609,15 @@ function AdminStartupsView() {
     catch (e) { setError(e.message); }
     finally { setProvisionBusy(false); }
   }
+  // Nov 2026 — "Grant Portal Access": no password typed or shared, same
+  // reasoning as AdminPartnersView's grantAccess() above.
+  async function grantAccess(s) {
+    if (provisionBusy) return;
+    setError(""); setProvisionBusy(true);
+    try { await api.provisionStartupLogin(s.id); await load(); }
+    catch (e) { setError(e.message); }
+    finally { setProvisionBusy(false); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
@@ -2599,15 +2646,22 @@ function AdminStartupsView() {
             <GhostButton onClick={() => setDetailStartupId(s.id)}>View Details</GhostButton>
             <GhostButton onClick={() => setEditingStartup(s)}>Edit</GhostButton>
             {/* 3 Nov 2026 fix — same reset-password gate removed as on the
-                Partners card; see comment there. */}
-            {provisioning === s.id ? (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
-              </div>
+                Partners card; see comment there. Nov 2026 passwordless
+                change: same split as the Partners card — "Grant Portal
+                Access" (one click, no password) until first provisioned,
+                "Reset password" (typed, optional) after. */}
+            {s.portal_login_status === "Provisioned" ? (
+              provisioning === s.id ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
+                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
+                </div>
+              ) : (
+                <GhostButton onClick={() => setProvisioning(s.id)}>Reset password</GhostButton>
+              )
             ) : (
-              <GhostButton onClick={() => setProvisioning(s.id)}>
-                {s.portal_login_status === "Provisioned" ? "Reset password" : "Provision login"}
+              <GhostButton onClick={() => grantAccess(s)} disabled={provisionBusy}>
+                {provisionBusy ? "Granting…" : "Grant Portal Access"}
               </GhostButton>
             )}
           </div>

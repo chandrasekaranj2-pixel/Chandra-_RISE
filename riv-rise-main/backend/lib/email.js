@@ -238,9 +238,29 @@ ${cta ? `<p><a href="${escapeHtml(cta.url)}">${escapeHtml(cta.label)}</a></p>` :
 
 const portalCta = (label = "Open the RISE Portal") => ({ label, url: `${appUrl()}/` });
 
+// --- 2b. One-time sign-in code (CEO request, Nov 2026 — passwordless
+// login for GTM partners/startups) — no link to click, just a short code
+// they type back into the RISE Portal login page. Expires quickly and
+// works once; see backend/routes/auth.js for the verification side.
+function buildLoginCode({ name, code }) {
+  const { text, html } = layout({
+    name,
+    paragraphs: [
+      "Here's your one-time code to sign in to the RISE Portal.",
+      "It expires in 10 minutes and works once. If you didn't request this, you can ignore this email.",
+    ],
+    facts: [["Your code", code]],
+  });
+  return { subject: `${code} is your RISE Portal sign-in code`, text, html };
+}
+
 // --- 3. Portal login ready (startup or GTM partner) ---------------------
-// No password in the email, ever: the admin shares it separately.
-function buildLoginReady({ name, email, rivOwner, role }) {
+// No password in the email, ever. As of the Nov 2026 passwordless change,
+// there usually isn't one to share in the first place — `passwordless`
+// (set whenever admin used "Grant Portal Access" rather than "Reset
+// password") swaps the old "your password was shared separately" line for
+// instructions to use the one-time email code instead.
+function buildLoginReady({ name, email, rivOwner, role, passwordless = true }) {
   const doWhat = role === "partner"
     ? "submit retailers and log the introductions you make"
     : "request introductions to retailers and follow each one";
@@ -248,7 +268,9 @@ function buildLoginReady({ name, email, rivOwner, role }) {
     name,
     paragraphs: [
       `Your RISE Portal account is set up. You can sign in at ${appUrl()}/ using ${email}.`,
-      `Your password was shared with you separately${rivOwner ? ` by ${rivOwner}` : ""}. We never send passwords by email.`,
+      passwordless
+        ? `There's no password to remember — on the login page, click "Sign in with an email code instead," enter ${email}, and you'll get a one-time code by email to sign in.`
+        : `Your password was shared with you separately${rivOwner ? ` by ${rivOwner}` : ""}. We never send passwords by email.`,
       `Once you're in, you can ${doWhat}.`,
       "If anything doesn't work, just reply to this email.",
     ],
@@ -449,6 +471,7 @@ module.exports = {
   appUrl,
   safely,
   buildLoginReady,
+  buildLoginCode,
   buildNewOpportunity,
   buildOpportunityReminder,
   buildRequestApproved,

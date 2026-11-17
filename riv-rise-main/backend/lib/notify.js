@@ -44,7 +44,10 @@ const toPartner = (intro, mail, type) =>
   sendEmail({ to: intro.partner_email, ...mail, replyTo: adminNotifyEmail(), type });
 
 // 3. Portal login ready — startup or GTM partner, first provisioning only.
-function loginReady({ role, row }) {
+// passwordless defaults true (the "Grant Portal Access" path, Nov 2026
+// onward); admin.js passes false when it actually set a real password via
+// "Reset password" on an already-provisioned account.
+function loginReady({ role, row, passwordless = true }) {
   return safely("Login-ready", () =>
     sendEmail({
       to: row.email,
@@ -53,6 +56,7 @@ function loginReady({ role, row }) {
         email: row.email,
         rivOwner: row.riv_owner,
         role,
+        passwordless,
       }),
       replyTo: adminNotifyEmail(),
       type: "login-ready",

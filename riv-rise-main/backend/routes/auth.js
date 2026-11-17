@@ -1,12 +1,27 @@
 const { Router } = require("express");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const { pool } = require("../db.js");
-const crypto = require("crypto");
-const jwt = require("jsonwebtoken");
-const { OAuth2Client } = require("google-auth-library");
-const { requireAuth, signToken, JWT_SECRET } = require("../middleware/auth.js");
+const { requireAuth, signToken } = require("../middleware/auth.js");
+const email = require("../lib/email.js");
 
 const router = Router();
+
+const NO_ACCESS_MESSAGE = "You don't have access to RISE. Contact your RIV owner to get set up.";
+const DEACTIVATED_MESSAGE = "Your RISE access has been deactivated. Contact your RIV owner.";
+
+// Admins have no partner/startup row to check, so they're always active.
+// A partner/startup is blocked the moment RIV admin marks their record
+// Inactive or Suspended — the "offboarding safety net" every login method
+// (password, code, and later Google/Microsoft) shares (CEO doc, Nov 2026).
+async function isAccountActive(user) {
+  if (user.role !== "partner" && user.role !== "startup") return true;
+  const table = user.role === "partner" ? "partners" : "startups";
+  const { rows } = await pool.query(`SELECT status, portal_login_status FROM ${table} WHERE user_id = $1`, [user.id]);
+  const row = rows[0];
+  if (!row) return true; // no linked record — shouldn't happen, don't block defensively
+  return row.status !== "Inactive" && row.portal_login_status !== "Suspended";
+}
 
 router.post("/login", async (req, res, next) => {
   try {
@@ -18,6 +33,7 @@ router.post("/login", async (req, res, next) => {
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       return res.status(401).json({ error: "Incorrect email or password." });
     }
+    if (!(await isAccountActive(user))) return res.status(403).json({ error: DEACTIVATED_MESSAGE });
 
     const token = signToken(user);
     res.json({
@@ -29,204 +45,129 @@ router.post("/login", async (req, res, next) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Sign in / sign up with Google. The existing email + password login above
-// is unchanged. A new person signs in with Google, fills in a short profile
-// (GTM partner or startup) and lands on their dashboard. The email always
-// comes from Google's verified ID token, never from what the browser sends.
-// Set ALLOW_SELF_SIGNUP=false to stop new people creating accounts this way.
-// ---------------------------------------------------------------------------
-let googleClient = null;
-function getGoogleClient() {
-  if (!process.env.GOOGLE_CLIENT_ID) return null;
-  if (!googleClient) googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-  return googleClient;
-}
-
-const normalizeEmail = (e) => String(e || "").toLowerCase().trim();
-const cleanText = (v, max = 200) => String(v ?? "").trim().slice(0, max);
-const selfSignupEnabled = () => process.env.ALLOW_SELF_SIGNUP !== "false";
-const SUSPENDED_MSG = "This login has been suspended. Contact RIV.";
-
-// Google accounts have no password; users.password_hash is NOT NULL, so store
-// the hash of a random value nobody knows (password login can never match it).
-const unusablePasswordHash = () => bcrypt.hashSync(crypto.randomBytes(32).toString("hex"), 10);
-
-const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, company: u.company });
-const respondWithSession = (res, user) => res.json({ token: signToken(user), user: publicUser(user) });
-
-async function isSuspended(user) {
-  if (user.role === "admin") return false;
-  const table = user.role === "partner" ? "partners" : "startups";
-  const { rows } = await pool.query(
-    `SELECT 1 FROM ${table} WHERE user_id = $1 AND portal_login_status = 'Suspended' LIMIT 1`,
-    [user.id]
-  );
-  return rows.length > 0;
-}
-
-// A suspended partner/startup with no login yet must not dodge the
-// suspension by signing up fresh.
-async function emailIsSuspended(email) {
-  const { rows } = await pool.query(
-    `SELECT 1 FROM partners WHERE lower(email) = $1 AND portal_login_status = 'Suspended'
-     UNION ALL
-     SELECT 1 FROM startups WHERE lower(email) = $1 AND portal_login_status = 'Suspended' LIMIT 1`,
-    [email]
-  );
-  return rows.length > 0;
-}
-
-// RIV may already have entered this person (no login yet). Google just
-// verified they own that email, so link to the existing record instead of
-// creating a duplicate.
-async function linkPreEnteredProfile(payload) {
-  const email = normalizeEmail(payload.email);
-  for (const { table, role } of [{ table: "partners", role: "partner" }, { table: "startups", role: "startup" }]) {
-    const { rows } = await pool.query(
-      `SELECT * FROM ${table} WHERE lower(email) = $1 AND user_id IS NULL AND portal_login_status <> 'Suspended' ORDER BY id LIMIT 1`,
-      [email]
-    );
-    const row = rows[0];
-    if (!row) continue;
-    const name = (role === "partner" ? row.full_name : row.founder_name || row.startup_name) || payload.name || email;
-    const company = role === "partner" ? row.company : row.startup_name;
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      const { rows: userRows } = await client.query(
-        `INSERT INTO users (email, password_hash, name, role, company, google_sub) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-        [email, unusablePasswordHash(), name, role, company, payload.sub]
-      );
-      await client.query(
-        `UPDATE ${table} SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1 AND user_id IS NULL`,
-        [row.id, userRows[0].id]
-      );
-      await client.query("COMMIT");
-      return userRows[0];
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
-      if (err.code === "23505") return null;
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-  return null;
-}
-
-// POST /api/auth/google { credential } -> session, or { needsSignup, signupToken } for a new person
-router.post("/google", async (req, res, next) => {
+// POST /auth/request-code — passwordless sign-in, step 1 (CEO request, Nov
+// 2026): email a one-time code to anyone who already has a RISE account.
+// Invite-only, same as every login method here: an email with no matching
+// users row (or one RIV admin deactivated) gets the same message and no
+// code at all — nothing is ever created on the fly.
+router.post("/request-code", async (req, res, next) => {
   try {
-    const { credential } = req.body || {};
-    if (!credential) return res.status(400).json({ error: "Missing Google credential." });
-    const client = getGoogleClient();
-    if (!client) return res.status(503).json({ error: "Google sign-in isn't configured on the server." });
+    const { email: rawEmail } = req.body || {};
+    if (!rawEmail) return res.status(400).json({ error: "Email is required." });
+    const normalizedEmail = String(rawEmail).toLowerCase().trim();
 
-    let payload;
-    try {
-      const ticket = await client.verifyIdToken({ idToken: credential, audience: process.env.GOOGLE_CLIENT_ID });
-      payload = ticket.getPayload();
-    } catch {
-      return res.status(401).json({ error: "Google sign-in couldn't be verified. Please try again." });
-    }
-    if (!payload?.email || !payload.email_verified) {
-      return res.status(401).json({ error: "That Google account's email isn't verified." });
-    }
+    const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [normalizedEmail]);
+    const user = rows[0];
+    if (!user) return res.status(403).json({ error: NO_ACCESS_MESSAGE });
+    if (!(await isAccountActive(user))) return res.status(403).json({ error: NO_ACCESS_MESSAGE });
 
-    const email = normalizeEmail(payload.email);
-    const { rows } = await pool.query("SELECT * FROM users WHERE lower(email) = $1", [email]);
-    let user = rows[0] || (await linkPreEnteredProfile(payload));
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+    const codeHash = crypto.createHash("sha256").update(code).digest("hex");
+    await pool.query(
+      "INSERT INTO login_codes (user_id, code_hash, expires_at) VALUES ($1, $2, now() + interval '10 minutes')",
+      [user.id, codeHash]
+    );
 
-    if (!user) {
-      if (!selfSignupEnabled()) return res.status(403).json({ error: "There's no RISE Portal account for this email. Ask RIV to set one up." });
-      if (await emailIsSuspended(email)) return res.status(403).json({ error: SUSPENDED_MSG });
-      const signupToken = jwt.sign(
-        { purpose: "signup", email, sub: payload.sub, name: payload.name || "" },
-        JWT_SECRET,
-        { expiresIn: "15m" }
-      );
-      return res.json({ needsSignup: true, signupToken, email, name: payload.name || "" });
-    }
+    await email.safely("Login-code", () =>
+      email.sendEmail({
+        to: user.email,
+        ...email.buildLoginCode({ name: user.name, code }),
+        replyTo: email.adminNotifyEmail(),
+        type: "login-code",
+      })
+    );
 
-    // First Google login binds the user to that Google account (`sub` is
-    // permanent, unlike email which can be re-assigned).
-    if (user.google_sub && user.google_sub !== payload.sub) {
-      return res.status(403).json({ error: "This portal account is linked to a different Google account." });
-    }
-    if (await isSuspended(user)) return res.status(403).json({ error: SUSPENDED_MSG });
-    if (!user.google_sub) await pool.query("UPDATE users SET google_sub = $2 WHERE id = $1", [user.id, payload.sub]);
-    respondWithSession(res, user);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
 });
 
-// POST /api/auth/signup { signupToken, role, ... } — finishes self-signup.
-router.post("/signup", async (req, res, next) => {
+// POST /auth/verify-code — passwordless sign-in, step 2: the code the user
+// typed back in. Single-use, 10-minute expiry, capped attempts so it can't
+// be brute-forced.
+router.post("/verify-code", async (req, res, next) => {
   try {
-    if (!selfSignupEnabled()) return res.status(403).json({ error: "Sign-up is closed. Ask RIV to set up your login." });
+    const { email: rawEmail, code } = req.body || {};
+    if (!rawEmail || !code) return res.status(400).json({ error: "Email and code are required." });
+    const normalizedEmail = String(rawEmail).toLowerCase().trim();
 
-    let claims;
+    const { rows: userRows } = await pool.query("SELECT * FROM users WHERE email = $1", [normalizedEmail]);
+    const user = userRows[0];
+    const invalidMessage = "This code is incorrect or has expired. Request a new one.";
+    if (!user) return res.status(401).json({ error: invalidMessage });
+
+    const { rows: codeRows } = await pool.query(
+      `SELECT * FROM login_codes WHERE user_id = $1 AND used_at IS NULL AND expires_at > now() AND attempts < 5
+       ORDER BY created_at DESC LIMIT 1`,
+      [user.id]
+    );
+    const codeRow = codeRows[0];
+    if (!codeRow) return res.status(401).json({ error: invalidMessage });
+
+    const suppliedHash = crypto.createHash("sha256").update(String(code).trim()).digest("hex");
+    const matches =
+      suppliedHash.length === codeRow.code_hash.length &&
+      crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(codeRow.code_hash));
+
+    if (!matches) {
+      await pool.query("UPDATE login_codes SET attempts = attempts + 1 WHERE id = $1", [codeRow.id]);
+      return res.status(401).json({ error: invalidMessage });
+    }
+    if (!(await isAccountActive(user))) return res.status(403).json({ error: DEACTIVATED_MESSAGE });
+
+    await pool.query("UPDATE login_codes SET used_at = now() WHERE id = $1", [codeRow.id]);
+
+    const token = signToken(user);
+    res.json({
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/google — "Sign in with Google" (CEO request, Nov 2026).
+// RIV decides who's a partner/startup by creating their record first (same
+// as today), so this is a second way in for someone already on file, never
+// an open self-signup: an email with no matching users row is rejected,
+// not auto-created.
+router.post("/google", async (req, res, next) => {
+  try {
+    const { credential } = req.body || {};
+    if (!credential) return res.status(400).json({ error: "Missing Google credential." });
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res.status(500).json({ error: "Google sign-in isn't configured on this server yet." });
+    }
+
+    // Verify the ID token with Google directly — no extra library needed,
+    // Node 18's built-in fetch is enough for this one call.
+    let payload;
     try {
-      claims = jwt.verify(String(req.body?.signupToken || ""), JWT_SECRET);
+      const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+      if (!verifyRes.ok) return res.status(401).json({ error: "Google sign-in failed — please try again." });
+      payload = await verifyRes.json();
     } catch {
-      return res.status(401).json({ error: "Your sign-up session expired. Please sign in with Google again." });
-    }
-    if (claims.purpose !== "signup" || !claims.email || !claims.sub) {
-      return res.status(401).json({ error: "Your sign-up session expired. Please sign in with Google again." });
-    }
-    if (await emailIsSuspended(claims.email)) return res.status(403).json({ error: SUSPENDED_MSG });
-
-    const role = req.body?.role;
-    if (role !== "partner" && role !== "startup") {
-      return res.status(400).json({ error: "Choose whether you're a GTM partner or a startup." });
-    }
-    const phone = cleanText(req.body?.phone, 40) || null;
-    let name;
-    let company;
-    if (role === "partner") {
-      name = cleanText(req.body?.fullName);
-      company = cleanText(req.body?.company) || null;
-      if (!name) return res.status(400).json({ error: "Your name is required." });
-    } else {
-      name = cleanText(req.body?.founderName);
-      company = cleanText(req.body?.startupName);
-      if (!company) return res.status(400).json({ error: "Your startup's name is required." });
-      if (!name) return res.status(400).json({ error: "The founder's name is required." });
+      return res.status(401).json({ error: "Google sign-in failed — please try again." });
     }
 
-    const client = await pool.connect();
-    let user;
-    try {
-      await client.query("BEGIN");
-      const { rows } = await client.query(
-        `INSERT INTO users (email, password_hash, name, role, company, google_sub) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-        [claims.email, unusablePasswordHash(), name, role, company, claims.sub]
-      );
-      user = rows[0];
-      if (role === "partner") {
-        await client.query(
-          `INSERT INTO partners (user_id, full_name, company, email, phone, portal_login_status) VALUES ($1,$2,$3,$4,$5,'Provisioned')`,
-          [user.id, name, company, claims.email, phone]
-        );
-      } else {
-        await client.query(
-          `INSERT INTO startups (user_id, startup_name, founder_name, email, phone, portal_login_status) VALUES ($1,$2,$3,$4,$5,'Provisioned')`,
-          [user.id, company, name, claims.email, phone]
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
-      if (err.code === "23505") {
-        return res.status(409).json({ error: "This email already has an account. Go back and sign in with Google." });
-      }
-      throw err;
-    } finally {
-      client.release();
+    if (payload.aud !== process.env.GOOGLE_CLIENT_ID || (payload.email_verified !== "true" && payload.email_verified !== true)) {
+      return res.status(401).json({ error: "Google sign-in failed — please try again." });
     }
-    respondWithSession(res, user);
+
+    const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [String(payload.email).toLowerCase().trim()]);
+    const user = rows[0];
+    if (!user) {
+      return res.status(403).json({ error: "This Google account isn't linked to a RISE record. Contact your RIV owner to get set up." });
+    }
+    if (!(await isAccountActive(user))) return res.status(403).json({ error: DEACTIVATED_MESSAGE });
+
+    const token = signToken(user);
+    res.json({
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company },
+    });
   } catch (err) {
     next(err);
   }
