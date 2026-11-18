@@ -563,7 +563,7 @@ function LoginView({ onAuthed }) {
               </PrimaryButton>
               <div style={{ textAlign: "center", marginTop: 14 }}>
                 <button type="button" onClick={() => switchMode("code-request")} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
-                  Sign in with an email code instead
+                  Sign in with email code
                 </button>
               </div>
             </form>
@@ -617,14 +617,13 @@ function LoginView({ onAuthed }) {
               </div>
             </form>
           )}
-          {GOOGLE_CLIENT_ID && mode !== "code-sent" && (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0", fontFamily: FONT, fontSize: 12, color: "#B7B2AE" }}>
-                <div style={{ flex: 1, height: 1, background: BRAND.line }} /> or <div style={{ flex: 1, height: 1, background: BRAND.line }} />
-              </div>
-              <GoogleSignInButton onCredential={handleGoogle} onError={setError} />
-            </>
-          )}
+          {/* Nov 2026 — "Continue with Google" hidden on request (not ready
+              for the demo: a VITE_GOOGLE_CLIENT_ID had been set on Render,
+              making it appear, even though the backend side was always meant
+              to stay dormant until there's an actual plan for it). The code
+              behind it (handleGoogle, GoogleSignInButton, /auth/google) is
+              untouched — restore this block to bring the button back once
+              that's wanted. */}
         </Card>
       </div>
     </div>
