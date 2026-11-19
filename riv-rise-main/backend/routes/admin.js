@@ -7,7 +7,7 @@ const bcrypt = require("bcryptjs");
 const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, SUPPORT_TYPES } = require("../db.js");
 const { requireAuth, requireAdmin } = require("../middleware/auth.js");
 const portalRoutes = require("./portal.js");
-const { computePartnerFee } = portalRoutes;
+const { computePartnerFee, startupIntroCapMessage } = portalRoutes;
 const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMaterialStorage.js");
 const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js");
 const { sendStartupWelcomeEmail, sendPartnerWelcomeEmail } = require("../lib/email.js");
@@ -504,12 +504,48 @@ router.post("/retailers", async (req, res, next) => {
   }
 });
 
+// 18 Nov 2026 batch, item 2 — max 20 "Active in network" retailers per GTM
+// partner at any one time. Only approved (Active in network) retailers
+// count toward the cap, not pending Prospect/In Process/Duplicate
+// submissions — per the confirmed decision, a partner can submit as many
+// retailers as they like, the cap only bites at the point one would be
+// approved (or otherwise set to Active in network) as their 21st. Shared
+// by both places a retailer's status can become Active in network: the
+// dedicated /approve route below, and the generic edit route further down
+// (an admin editing a retailer's status directly from the edit modal).
+// Returns an error message, or null when there's room — same
+// return-value-not-throw pattern as startupIntroCapMessage in portal.js,
+// since this file's error middleware always responds 500 regardless of a
+// thrown error's .status.
+const RETAILER_ACTIVE_CAP = 20;
+async function partnerRetailerCapMessage(owningPartnerId) {
+  if (!owningPartnerId) return null; // RIV Direct retailers aren't owned by any partner — no cap applies.
+  const { rows: countRows } = await pool.query(
+    "SELECT count(*)::int AS count FROM retailers WHERE owning_partner_id = $1 AND status = 'Active in network'",
+    [owningPartnerId]
+  );
+  if (countRows[0].count >= RETAILER_ACTIVE_CAP) {
+    const { rows: partnerRows } = await pool.query("SELECT full_name FROM partners WHERE id = $1", [owningPartnerId]);
+    return `${partnerRows[0]?.full_name || "This GTM partner"} already has ${RETAILER_ACTIVE_CAP} active retailers in their network — the maximum at any one time. A slot frees up if one of their existing retailers is taken out of the active network.`;
+  }
+  return null;
+}
+
 // PUT /api/admin/retailers/:id/approve — flips a partner-submitted
 // Prospect into the approved network in one click (addendum §1's "RIV
 // approves" step for retailer submissions, distinct from the introduction
 // approval endpoints below).
 router.put("/retailers/:id/approve", async (req, res, next) => {
   try {
+    const { rows: existingRows } = await pool.query("SELECT owning_partner_id, status FROM retailers WHERE id = $1", [req.params.id]);
+    const existing = existingRows[0];
+    if (!existing) return res.status(404).json({ error: "Retailer not found." });
+
+    if (existing.status !== "Active in network") {
+      const capMessage = await partnerRetailerCapMessage(existing.owning_partner_id);
+      if (capMessage) return res.status(409).json({ error: capMessage });
+    }
+
     const { rows } = await pool.query(
       `UPDATE retailers SET status = 'Active in network', rejection_reason = NULL WHERE id = $1 RETURNING *`,
       [req.params.id]
@@ -561,6 +597,22 @@ router.put("/retailers/:id/reject", async (req, res, next) => {
 router.put("/retailers/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
+
+    // 18 Nov 2026 batch, item 2 — the same 20-active-retailer cap as the
+    // dedicated /approve route above, for the case where admin flips a
+    // retailer's status to Active in network from this general edit form
+    // instead (and/or reassigns owning_partner_id at the same time).
+    if (f.status === "Active in network") {
+      const { rows: existingRows } = await pool.query("SELECT owning_partner_id, status FROM retailers WHERE id = $1", [req.params.id]);
+      const existing = existingRows[0];
+      if (!existing) return res.status(404).json({ error: "Retailer not found." });
+      const effectiveOwningPartnerId = f.owningPartnerId ?? existing.owning_partner_id;
+      if (existing.status !== "Active in network") {
+        const capMessage = await partnerRetailerCapMessage(effectiveOwningPartnerId);
+        if (capMessage) return res.status(409).json({ error: capMessage });
+      }
+    }
+
     const { rows } = await pool.query(
       `UPDATE retailers SET
          name = COALESCE($2, name), brand = COALESCE($3, brand), website = COALESCE($4, website),
@@ -712,6 +764,14 @@ router.post("/introductions", async (req, res, next) => {
     if (retailer.network_source === "GTM Partner") {
       return res.status(400).json({ error: "This retailer belongs to a GTM partner's network — use that partner's \"Check Introduction Interest\" flow instead of New Introduction." });
     }
+
+    // 18 Nov 2026 batch, item 1 — max 5 active introductions per startup at
+    // any one time, enforced here too (mirrors the same check in
+    // portal.js's two introduction-creation routes — see
+    // startupIntroCapMessage there for the "active" definition).
+    const { rows: startupNameRows } = await pool.query("SELECT startup_name FROM startups WHERE id = $1", [startupId]);
+    const capMessage = await startupIntroCapMessage(startupId, startupNameRows[0]?.startup_name);
+    if (capMessage) return res.status(409).json({ error: capMessage });
 
     // 9 Oct 2026 batch, item 10 — this route had no duplicate-pairing check
     // at all (the GTM partner's own "Check Introduction Interest" form

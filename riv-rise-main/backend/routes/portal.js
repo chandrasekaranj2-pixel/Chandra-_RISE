@@ -237,6 +237,39 @@ const LIVE_PAIRING_SQL = `
   AND (i.engagement_stage IS NULL OR i.engagement_stage NOT IN ('Closed - Lost', 'Stalled'))
 `;
 
+// A startup's "active" introduction count (18 Nov 2026 batch, item 1 — the
+// 5-at-a-time cap). Deliberately NOT the same as LIVE_PAIRING_SQL above:
+// that fragment still treats a Closed - Won pairing as "live" (so a second
+// partner can't re-introduce the same already-won pairing), but a Closed -
+// Won deal should free up the startup's slot here — the startup isn't
+// waiting on it any more, it's done. So this excludes Closed - Won too, on
+// top of Rejected / Closed - Lost / Stalled. Shared by all three places an
+// introduction gets created: the startup's own Request Intro (this file),
+// the GTM partner's Check Introduction Interest (createPartnerInitiatedIntroduction,
+// this file), and RIV Admin's New Introduction (admin.js).
+const STARTUP_ACTIVE_INTRO_SQL = `
+  i.approval_status != 'Rejected'
+  AND (i.status IS NULL OR i.status NOT IN ('Closed - Won', 'Closed - Lost'))
+  AND (i.engagement_stage IS NULL OR i.engagement_stage NOT IN ('Closed - Won', 'Closed - Lost', 'Stalled'))
+`;
+const STARTUP_ACTIVE_INTRO_CAP = 5;
+
+// Returns an error message when a startup is already at the cap, or null
+// when there's room. The error-handling middleware in app.js always
+// returns a generic 500, so (like every other business-rule check in this
+// file) this is a plain return value the caller checks and turns into its
+// own res.status(409).json({ error }) — not a thrown error.
+async function startupIntroCapMessage(startupId, startupNameForMessage) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS count FROM introductions i WHERE i.startup_id = $1 AND ${STARTUP_ACTIVE_INTRO_SQL}`,
+    [startupId]
+  );
+  if (rows[0].count >= STARTUP_ACTIVE_INTRO_CAP) {
+    return `${startupNameForMessage || "This startup"} already has ${STARTUP_ACTIVE_INTRO_CAP} active introductions (introduced-and-in-progress, or freshly requested) — the maximum at any one time. A slot frees up when one of those is closed (won or lost) or dropped.`;
+  }
+  return null;
+}
+
 // Mirrors App.jsx's interestStatusFor() — used only to compose the
 // duplicate-pairing warning message server-side (item 2), not for any
 // stored value.
@@ -348,6 +381,12 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
     const startupId = s[0]?.id;
     if (!startupId) return res.status(403).json({ error: "No startup profile linked to this login." });
 
+    // 18 Nov 2026 batch, item 1 — max 5 active introductions per startup at
+    // any one time (counts GTM-initiated and RIV-initiated ones too, not
+    // just the startup's own requests like this one).
+    const capMessage = await startupIntroCapMessage(startupId);
+    if (capMessage) return res.status(409).json({ error: capMessage });
+
     const { rows: retailerRows } = await pool.query(
       "SELECT name, network_source, owning_partner_id FROM retailers WHERE id = $1 AND status = 'Active in network'",
       [retailerId]
@@ -458,8 +497,15 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
       "SELECT network_source FROM retailers WHERE id = $1 AND status = 'Active in network'", [retailerId]
     );
     if (!retailerRows[0]) return res.status(404).json({ error: "Retailer not found or not yet approved." });
-    const { rows: startupRows } = await pool.query("SELECT id FROM startups WHERE id = $1 AND status = 'Active'", [startupId]);
+    const { rows: startupRows } = await pool.query("SELECT id, startup_name FROM startups WHERE id = $1 AND status = 'Active'", [startupId]);
     if (!startupRows[0]) return res.status(404).json({ error: "Startup not found or not yet approved." });
+
+    // 18 Nov 2026 batch, item 1 — max 5 active introductions per startup at
+    // any one time, enforced here too (not just the startup's own Request
+    // Intro) since a GTM partner proposing a pairing counts against the
+    // same cap.
+    const capMessage = await startupIntroCapMessage(startupId, startupRows[0].startup_name);
+    if (capMessage) return res.status(409).json({ error: capMessage });
 
     // Duplicate-pairing validation (item 2) — server-side is the source of
     // truth; blocks the GTM partner's form outright (unlike the startup's
@@ -890,6 +936,11 @@ router.computePartnerFee = computePartnerFee;
 // exact same LIVE_PAIRING_SQL check instead of duplicating it.
 router.LIVE_PAIRING_SQL = LIVE_PAIRING_SQL;
 router.interestStatusForServer = interestStatusForServer;
+// 18 Nov 2026 batch, item 1 — the startup 5-active-introduction cap also
+// has to be enforced on admin.js's own "New Introduction" creation route,
+// not just the two routes in this file. Exposed the same way as
+// computePartnerFee/LIVE_PAIRING_SQL just above.
+router.startupIntroCapMessage = startupIntroCapMessage;
 
 // Small notification-log helpers.
 async function notify(poolRef, type, introId, recipientRole, recipientProfileId) {
