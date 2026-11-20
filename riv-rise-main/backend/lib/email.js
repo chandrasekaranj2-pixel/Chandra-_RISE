@@ -119,6 +119,10 @@ function buildIntroductionRequestAck({ founderName, retailerName, requestedAt })
     timeZone: "Asia/Kolkata",
   })} IST`;
   const greetingName = founderName || "there";
+  // 20 Nov 2026 CS batch — another template outside the shared layout(),
+  // so the footer line is added by hand here too, same as the welcome
+  // emails above.
+  const questionsLine = `For any questions, please reach out to ${adminNotifyEmail()}.`;
   const subject = `Introduction request received: ${retailerName}`;
   const text = `Hi ${greetingName},
 
@@ -126,10 +130,13 @@ Thanks for submitting an introduction request to ${retailerName} on the RISE Por
 
 RIV will review your request and follow up with next steps. You submitted this on ${when}.
 
+${questionsLine}
+
 — RISE Portal (Retail Innovation Ventures)`;
   const html = `<p>Hi ${escapeHtml(greetingName)},</p>
 <p>Thanks for submitting an introduction request to <strong>${escapeHtml(retailerName)}</strong> on the RISE Portal.</p>
 <p>RIV will review your request and follow up with next steps. You submitted this on ${when}.</p>
+<p>${escapeHtml(questionsLine)}</p>
 <p>— RISE Portal (Retail Innovation Ventures)</p>`;
   return { subject, text, html };
 }
@@ -170,6 +177,12 @@ function buildStartupWelcome({ founderName, startupName, rivOwner, hasPortalLogi
     },
   ];
 
+  // 20 Nov 2026 CS batch — this template doesn't go through the shared
+  // layout() footer (it has its own hand-built HTML/text, predating that
+  // helper), so the "For any questions..." line has to be added here
+  // directly too, same wording as everywhere else.
+  const questionsLine = `For any questions, please reach out to ${adminNotifyEmail()}.`;
+
   const subject = `Welcome to Retail Innovation Ventures, ${oneLine(company)}!`;
   const text = `Hi ${greetingName},
 
@@ -180,6 +193,8 @@ Here's what to expect from here:
 ${bullets.map((b) => `- ${b.title} ${b.body}`).join("\n")}
 ${hasPortalLogin ? `\nRISE Portal: ${link}\n` : ""}
 We're looking forward to building this with you.
+
+${questionsLine}
 
 Warm regards,
 The Retail Innovation Ventures Team`;
@@ -193,6 +208,7 @@ ${bullets.map((b) => `<li style="margin-bottom:8px"><strong>${escapeHtml(b.title
 </ul>
 ${hasPortalLogin ? `<p><a href="${escapeHtml(link)}">Open the RISE Portal</a></p>` : ""}
 <p>We're looking forward to building this with you.</p>
+<p>${escapeHtml(questionsLine)}</p>
 <p>Warm regards,<br>The Retail Innovation Ventures Team</p>
 </div>`;
 
@@ -439,6 +455,10 @@ function buildPartnerWelcome({ partnerName, rivOwner, hasPortalLogin }) {
   ];
   const greetingName = partnerName || "there";
   const link = `${appUrl()}/`;
+  // 20 Nov 2026 CS batch — same reasoning as buildStartupWelcome above:
+  // this template has its own hand-built HTML/text, so the footer line
+  // needs adding here directly too.
+  const questionsLine = `For any questions, please reach out to ${adminNotifyEmail()}.`;
   const text = `Hi ${greetingName},
 
 Welcome to Retail Innovation Ventures. We're delighted to have you on board as a GTM partner, and we're genuinely excited to work with you.
@@ -448,6 +468,8 @@ Here's what to expect from here:
 ${bullets.map((b) => `- ${b.title} ${b.body}`).join("\n")}
 ${hasPortalLogin ? `\nRISE Portal: ${link}\n` : ""}
 We're looking forward to building this with you.
+
+${questionsLine}
 
 Warm regards,
 The Retail Innovation Ventures Team`;
@@ -460,6 +482,7 @@ ${bullets.map((b) => `<li style="margin-bottom:8px"><strong>${escapeHtml(b.title
 </ul>
 ${hasPortalLogin ? `<p><a href="${escapeHtml(link)}">Open the RISE Portal</a></p>` : ""}
 <p>We're looking forward to building this with you.</p>
+<p>${escapeHtml(questionsLine)}</p>
 <p>Warm regards,<br>The Retail Innovation Ventures Team</p>
 </div>`;
   return { subject: "Welcome to Retail Innovation Ventures!", text, html };
