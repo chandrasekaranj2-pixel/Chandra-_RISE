@@ -45,11 +45,23 @@ function tagValue(value) {
 
 // Every RISE email is tagged app=rise (plus a type) so RISE and RIOS traffic
 // can be told apart in Resend's dashboard even though both use one domain.
+//
+// Nov 2026 — the shared RIV inbox (adminNotifyEmail()) is Reply-To on every
+// outbound email already, but Resend sends through its own API, never
+// through that inbox's own "Send" — so nothing RISE sends ever shows up
+// there, even as a record. BCC'ing it on everything (skipped when it's
+// already the recipient, so alerts already addressed to it don't double up)
+// gives admin a running copy of every email RISE has sent, without
+// pretending to send *from* that real, actively-used mailbox (which would
+// risk looking like spoofing to its own mail provider).
 async function sendEmail({ to, subject, text, html, replyTo, type }) {
   if (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM) {
     console.warn(`Email not sent (RESEND_API_KEY/EMAIL_FROM not configured): "${subject}" -> ${to}`);
     return { skipped: true };
   }
+
+  const notifyInbox = adminNotifyEmail();
+  const bcc = String(to).toLowerCase().trim() === notifyInbox.toLowerCase().trim() ? undefined : notifyInbox;
 
   const res = await fetch(RESEND_URL, {
     method: "POST",
@@ -58,12 +70,17 @@ async function sendEmail({ to, subject, text, html, replyTo, type }) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: `RISE Portal <${process.env.EMAIL_FROM}>`,
+      // 20 Nov 2026 — display name only; the actual address stays
+      // EMAIL_FROM (on the rise.retailinnovation.ai domain already
+      // verified in Resend) until retailinnovation.ventures is verified
+      // there too. "RIV-RISE" confirmed as the exact text to show.
+      from: `RIV-RISE <${process.env.EMAIL_FROM}>`,
       to: [to],
       subject: oneLine(subject),
       text,
       ...(html ? { html } : {}),
       ...(replyTo ? { reply_to: replyTo } : {}),
+      ...(bcc ? { bcc: [bcc] } : {}),
       tags: [{ name: "app", value: "rise" }, ...(type ? [{ name: "type", value: tagValue(type) }] : [])],
     }),
   });
@@ -218,12 +235,23 @@ function fmtDate(value) {
 
 function layout({ name, paragraphs, facts, cta, signoff = "The Retail Innovation Ventures Team" }) {
   const hi = `Hi ${name || "there"},`;
+  // 20 Nov 2026 CS batch — every RISE email now names the actual inbox to
+  // write to, right above the sign-off, instead of relying on people
+  // noticing Reply-To goes somewhere other than the From address. Added
+  // here once, in the shared footer, so it's consistent on every email
+  // regardless of what else that template already says (an existing
+  // "just reply to this email" sentence elsewhere in a given template is
+  // left as-is — this is an additional, always-present line, not a
+  // replacement for those). Uses adminNotifyEmail() rather than the bare
+  // default so it stays correct if ADMIN_NOTIFY_EMAIL is ever overridden.
+  const questionsLine = `For any questions, please reach out to ${adminNotifyEmail()}.`;
   const factLines = (facts || []).filter(([, v]) => v);
   const text = [
     hi,
     ...paragraphs,
     ...(factLines.length ? [factLines.map(([k, v]) => `${k}: ${v}`).join("\n")] : []),
     ...(cta ? [`${cta.label}: ${cta.url}`] : []),
+    questionsLine,
     `Warm regards,\n${signoff}`,
   ].join("\n\n");
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#1a1a1a;max-width:600px">
@@ -231,6 +259,7 @@ function layout({ name, paragraphs, facts, cta, signoff = "The Retail Innovation
 ${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join("\n")}
 ${factLines.length ? `<table style="border-collapse:collapse;margin:0 0 16px">${factLines.map(([k, v]) => `<tr><td style="padding:2px 16px 2px 0;color:#666">${escapeHtml(k)}</td><td style="padding:2px 0"><strong>${escapeHtml(v)}</strong></td></tr>`).join("")}</table>` : ""}
 ${cta ? `<p><a href="${escapeHtml(cta.url)}">${escapeHtml(cta.label)}</a></p>` : ""}
+<p>${escapeHtml(questionsLine)}</p>
 <p>Warm regards,<br>${escapeHtml(signoff)}</p>
 </div>`;
   return { text, html };
@@ -255,11 +284,12 @@ function buildLoginCode({ name, code }) {
 }
 
 // --- 3. Portal login ready (startup or GTM partner) ---------------------
-// No password in the email, ever. As of the Nov 2026 passwordless change,
-// there usually isn't one to share in the first place — `passwordless`
-// (set whenever admin used "Grant Portal Access" rather than "Reset
-// password") swaps the old "your password was shared separately" line for
-// instructions to use the one-time email code instead.
+// No password in the email, ever. 20 Nov 2026 CS batch — the login page now
+// only ever shows the email-code screen (no password tab, no "instead"
+// wording to match), so this is a single message regardless of how admin
+// provisioned the account. `passwordless` is kept as a parameter (admin.js
+// still passes it through) so the dormant "Reset password" path stays
+// wired up if it's ever used again, but the text no longer branches on it.
 function buildLoginReady({ name, email, rivOwner, role, passwordless = true }) {
   const doWhat = role === "partner"
     ? "submit retailers and log the introductions you make"
@@ -268,9 +298,7 @@ function buildLoginReady({ name, email, rivOwner, role, passwordless = true }) {
     name,
     paragraphs: [
       `Your RISE Portal account is set up. You can sign in at ${appUrl()}/ using ${email}.`,
-      passwordless
-        ? `There's no password to remember — on the login page, click "Sign in with an email code instead," enter ${email}, and you'll get a one-time code by email to sign in.`
-        : `Your password was shared with you separately${rivOwner ? ` by ${rivOwner}` : ""}. We never send passwords by email.`,
+      `There's no password to remember — on the login page, enter ${email} and we'll send you a one-time code by email to sign in.`,
       `Once you're in, you can ${doWhat}.`,
       "If anything doesn't work, just reply to this email.",
     ],

@@ -7,8 +7,13 @@ const email = require("../lib/email.js");
 
 const router = Router();
 
-const NO_ACCESS_MESSAGE = "You don't have access to RISE. Contact your RIV owner to get set up.";
-const DEACTIVATED_MESSAGE = "Your RISE access has been deactivated. Contact your RIV owner.";
+// 20 Nov 2026 CS batch — both the "never had access" and "deactivated"
+// cases now show the exact same wording (confirmed decision), pointing
+// people at the shared RIV inbox instead of a generic "contact your RIV
+// owner." One constant, reused for both, so there's a single source of
+// truth for the exact text.
+const NO_ACCESS_MESSAGE = "Please write to contact@retailinnovation.ventures to get yourself set up.";
+const DEACTIVATED_MESSAGE = NO_ACCESS_MESSAGE;
 
 // Admins have no partner/startup row to check, so they're always active.
 // A partner/startup is blocked the moment RIV admin marks their record

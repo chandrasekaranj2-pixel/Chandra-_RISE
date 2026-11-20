@@ -471,7 +471,13 @@ function LoginView({ onAuthed }) {
   // "password" | "code-request" | "code-sent" — passwordless email sign-in
   // (CEO request, Nov 2026). Google sign-in (below) is a third, independent
   // way in, shown alongside whichever of these is active.
-  const [mode, setMode] = useState("password");
+  //
+  // 20 Nov 2026 CS batch — "Sign in using code" is now the only screen
+  // anyone sees (default AND only reachable mode): the password form below
+  // is left in place, dormant, exactly like handleGoogle/GoogleSignInButton
+  // further down, so it can be restored in one line if ever needed, but
+  // there is no longer any button/link in the UI that can reach it.
+  const [mode, setMode] = useState("code-request");
 
   // Shared by password login, email-code login, and Google sign-in — all
   // three return the same { token, user } shape from the backend. None of
@@ -549,25 +555,14 @@ function LoginView({ onAuthed }) {
           <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginTop: 6 }}>Retail Innovation Scaling Engine</div>
         </div>
         <Card style={{ padding: 26 }}>
-          {mode === "password" && (
-            <form onSubmit={submit}>
-              <ErrorBanner text={error} />
-              <Field label="Email" required>
-                <input style={inputStyle} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-              </Field>
-              <Field label="Password" required>
-                <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-              </Field>
-              <PrimaryButton type="submit" disabled={loading} style={{ width: "100%", padding: "12px 18px" }}>
-                {loading ? "Signing in…" : "Sign in"}
-              </PrimaryButton>
-              <div style={{ textAlign: "center", marginTop: 14 }}>
-                <button type="button" onClick={() => switchMode("code-request")} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
-                  Sign in with email code
-                </button>
-              </div>
-            </form>
-          )}
+          {/* 20 Nov 2026 CS batch — password sign-in removed from the login
+              screen for every role, admins included (confirmed decision:
+              hide the UI only). submit()/password state above are kept,
+              unused, so the backend's password route and admin's "Reset
+              password" action still work as a dormant fallback — this is
+              just no longer reachable from here. Restore this block (and
+              the "Use password instead" link it used to pair with) to
+              bring the tab back. */}
           {mode === "code-request" && (
             <form onSubmit={sendCode}>
               <ErrorBanner text={error} />
@@ -580,11 +575,6 @@ function LoginView({ onAuthed }) {
               <PrimaryButton type="submit" disabled={loading} style={{ width: "100%", padding: "12px 18px" }}>
                 {loading ? "Sending…" : "Send me a code"}
               </PrimaryButton>
-              <div style={{ textAlign: "center", marginTop: 14 }}>
-                <button type="button" onClick={() => switchMode("password")} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
-                  Use password instead
-                </button>
-              </div>
             </form>
           )}
           {mode === "code-sent" && (
