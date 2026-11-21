@@ -1183,10 +1183,14 @@ function StartupDetailModal({ startupId, onClose }) {
     ["Currently raising capital", startup.currently_raising_capital],
     ["Interested in RIV fundraising support", startup.fundraising_support_interest],
     ["Anything else", startup.additional_notes],
-    // 21 Nov 2026 CS batch — what a GTM partner earns on this startup.
-    // Only ever present in the API response for partner/admin roles (see
-    // GET /startups/:id in portal.js) — undefined for a startup viewing
-    // this, so these two rows simply don't render for them.
+    // 21 Nov 2026 CS batch — the 4 dynamic fee fields. Both pairs are only
+    // ever present in the API response for the roles allowed to see them
+    // (see GET /startups/:id in portal.js's 3-way column split) — a field
+    // that's absent for the current viewer's role is simply undefined, so
+    // its row is dropped by the rows.filter(([, v]) => v) below rather
+    // than needing an explicit role check here.
+    ["Introduction fee (startup pays RIV)", startup.intro_fee_pct != null ? `${startup.intro_fee_pct}%` : null],
+    ["Active Commercialization Support fee (startup pays RIV)", startup.active_commercialization_fee_pct != null ? `${startup.active_commercialization_fee_pct}%` : null],
     ["Your success fee - Intro Only deals", startup.gtm_share_intro_pct != null ? `${startup.gtm_share_intro_pct}%` : null],
     ["Your success fee - Intro + Closure Support deals", startup.gtm_share_commercialization_pct != null ? `${startup.gtm_share_commercialization_pct}%` : null],
   ] : [];

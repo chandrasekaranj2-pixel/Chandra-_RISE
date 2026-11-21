@@ -88,12 +88,19 @@ router.get("/startups", requireRole("partner", "admin"), async (req, res, next) 
 // every field a GTM partner needs to assess the startup before backing an
 // introduction with their reputation.
 //
-// 21 Nov 2026 CS batch — gtm_share_intro_pct/gtm_share_commercialization_pct
-// (what a GTM partner earns on this startup) are added ONLY for the
-// partner/admin case, same split as the list route above. This route is
-// shared across all three roles, so the startup branch deliberately
-// leaves those two columns out rather than filtering them after the
-// query — a startup never sees what RIV pays a partner on their own deal.
+// 21 Nov 2026 CS batch — three-way column split, not two:
+//  - startup: sharedColumns only — never sees what RIV pays a partner,
+//    and this route isn't where a startup reads its OWN fee rates either
+//    (that's GET /me, which does a plain SELECT *).
+//  - partner: sharedColumns + the 2 gtm_share_* columns (what THEY earn) —
+//    never the startup's own intro_fee_pct/active_commercialization_fee_pct
+//    (what the startup pays RIV — not a partner's business).
+//  - admin: sharedColumns + ALL 4 fee columns, since admin is the one role
+//    that legitimately needs to see both sides at once on this screen.
+// A prior version of this route lumped partner and admin into the same
+// "not startup" branch, which meant admin's own "View Details" modal was
+// silently missing the startup's own 2 fee fields (only the GTM-share
+// ones came through) — caught via live testing on 21 Nov 2026.
 router.get("/startups/:id", requireRole("partner", "startup", "admin"), async (req, res, next) => {
   try {
     const sharedColumns = `id, startup_name, founder_name, sector, solution_summary, problem_description,
@@ -103,6 +110,8 @@ router.get("/startups/:id", requireRole("partner", "startup", "admin"), async (r
               past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes`;
     const columns = req.user.role === "startup"
       ? sharedColumns
+      : req.user.role === "admin"
+      ? `${sharedColumns}, intro_fee_pct, active_commercialization_fee_pct, gtm_share_intro_pct, gtm_share_commercialization_pct`
       : `${sharedColumns}, gtm_share_intro_pct, gtm_share_commercialization_pct`;
     const { rows } = await pool.query(
       `SELECT ${columns} FROM startups WHERE id = $1 AND status = 'Active'`,
