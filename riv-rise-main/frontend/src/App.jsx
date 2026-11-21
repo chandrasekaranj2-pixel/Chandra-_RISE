@@ -633,6 +633,7 @@ function navItemsFor(role) {
     { id: "retailers", label: "Retailer Directory" },
     { id: "introductions-requested", label: "Retailer Introductions Requested" },
     { id: "introductions-initiated", label: "Retailer Introductions Initiated by RIV" },
+    { id: "my-fees", label: "My Success Fees" },
   ] : [
     { id: "overview", label: "Overview" }, { id: "partners", label: "GTM Partners" }, { id: "startups", label: "Startups" },
     { id: "retailers", label: "Retailers" }, { id: "introductions", label: "Introductions" },
@@ -1110,11 +1111,46 @@ function PartnerStartupsView({ onViewDetails }) {
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{s.startup_name}</div>
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{s.sector}</div>
             <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", marginTop: 6, maxWidth: 480 }}>{s.solution_summary}</div>
+            {(s.gtm_share_intro_pct != null || s.gtm_share_commercialization_pct != null) && (
+              <div style={{ fontFamily: FONT, fontSize: 12, color: BRAND.gold || "#9B7B2E", marginTop: 6 }}>
+                Your success fee — Intro: {s.gtm_share_intro_pct != null ? `${s.gtm_share_intro_pct}%` : "—"} · Intro + Closure Support: {s.gtm_share_commercialization_pct != null ? `${s.gtm_share_commercialization_pct}%` : "—"}
+              </div>
+            )}
           </div>
           <GhostButton onClick={() => onViewDetails(s.id)} style={{ flexShrink: 0 }}>View Details</GhostButton>
         </Card>
       ))}
     </div>
+  );
+}
+
+// 21 Nov 2026 CS batch — what a startup pays RIV on its own introductions.
+// Mirrors PartnerStartupsView's fee display but for the startup's own two
+// fields (never the GTM partner's share — see GET /me's column-stripping
+// in portal.js). Simple one-card view since a startup only ever sees its
+// own single profile, not a list.
+function StartupFeesView() {
+  const [profile, setProfile] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => { api.getMe().then((r) => setProfile(r.profile || r)).catch((e) => setError(e.message)); }, []);
+  if (error) return <ErrorBanner text={error} />;
+  if (!profile) return <Spinner />;
+  const hasIntro = profile.intro_fee_pct != null;
+  const hasCommercialization = profile.active_commercialization_fee_pct != null;
+  return (
+    <Card style={{ padding: 20, maxWidth: 480 }}>
+      <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", marginBottom: 16, lineHeight: 1.6 }}>
+        The success fee RIV charges on introductions for {profile.startup_name || "your startup"}, depending on the level of support requested.
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11.5, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>Introduction fee</div>
+        <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: BRAND.ink }}>{hasIntro ? `${profile.intro_fee_pct}%` : "Not yet set — contact RIV Admin"}</div>
+      </div>
+      <div>
+        <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11.5, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>Active Commercialization Support fee</div>
+        <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: BRAND.ink }}>{hasCommercialization ? `${profile.active_commercialization_fee_pct}%` : "Not yet set — contact RIV Admin"}</div>
+      </div>
+    </Card>
   );
 }
 
@@ -1147,6 +1183,12 @@ function StartupDetailModal({ startupId, onClose }) {
     ["Currently raising capital", startup.currently_raising_capital],
     ["Interested in RIV fundraising support", startup.fundraising_support_interest],
     ["Anything else", startup.additional_notes],
+    // 21 Nov 2026 CS batch — what a GTM partner earns on this startup.
+    // Only ever present in the API response for partner/admin roles (see
+    // GET /startups/:id in portal.js) — undefined for a startup viewing
+    // this, so these two rows simply don't render for them.
+    ["Your success fee - Intro Only deals", startup.gtm_share_intro_pct != null ? `${startup.gtm_share_intro_pct}%` : null],
+    ["Your success fee - Intro + Closure Support deals", startup.gtm_share_commercialization_pct != null ? `${startup.gtm_share_commercialization_pct}%` : null],
   ] : [];
 
   return (
@@ -2452,6 +2494,40 @@ function AdminPartnersView() {
 // including the commission (revenue share) override and the fee/equity
 // onboarding fields — RIV admin is the final decision-maker on all of
 // these, not just the basics shown on the card. Email is read-only here
+// 21 Nov 2026 CS batch — the 4 dynamic success-fee fields (db.js has the
+// full explanation of what each one means and how it's used). Shared by
+// the "New RISE startup" create modal and EditStartupModal below so the
+// section only has to be written once. All four are optional: left
+// blank, admin keeps typing Intro Rate/Closure Rate by hand on each
+// introduction exactly like before this feature existed, and the GTM
+// partner's share falls back to that partner's own default rate.
+function SuccessFeeFields({ form, setForm }) {
+  return (
+    <>
+      <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 12.5, color: BRAND.ink, margin: "18px 0 10px", borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>
+        Success fee rates
+      </div>
+      <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 10 }}>
+        Leave any of these blank to keep typing rates by hand per introduction, like before. The startup only ever
+        sees the top two (what they pay RIV); the GTM partner only ever sees the bottom two (what they earn), per
+        startup they're paired with.
+      </div>
+      <Field label="Introduction fees %" hint="What this startup pays RIV on an Intro Only deal.">
+        <input style={inputStyle} type="number" step="0.1" min="0" max="100" value={form.introFeePct} onChange={(e) => setForm({ ...form, introFeePct: e.target.value })} />
+      </Field>
+      <Field label="Active Commercialization Support fees %" hint="What this startup pays RIV on an Intro + Closure Support deal.">
+        <input style={inputStyle} type="number" step="0.1" min="0" max="100" value={form.activeCommercializationFeePct} onChange={(e) => setForm({ ...form, activeCommercializationFeePct: e.target.value })} />
+      </Field>
+      <Field label="GTM Partner share - Intro fees %" hint="Of the Introduction fees above, what RIV pays the GTM partner.">
+        <input style={inputStyle} type="number" step="0.1" min="0" max="100" value={form.gtmShareIntroPct} onChange={(e) => setForm({ ...form, gtmShareIntroPct: e.target.value })} />
+      </Field>
+      <Field label="GTM Partner share - Active commercialization %" hint="Of the Active Commercialization Support fees above, what RIV pays the GTM partner.">
+        <input style={inputStyle} type="number" step="0.1" min="0" max="100" value={form.gtmShareCommercializationPct} onChange={(e) => setForm({ ...form, gtmShareCommercializationPct: e.target.value })} />
+      </Field>
+    </>
+  );
+}
+
 // for the same reason as EditPartnerModal.
 function EditStartupModal({ startup, onClose, onSaved }) {
   const [form, setForm] = useState({
@@ -2462,6 +2538,9 @@ function EditStartupModal({ startup, onClose, onSaved }) {
     participationFeeStatus: startup.participation_fee_status || "Pending",
     participationFeeDueDate: startup.participation_fee_due_date ? startup.participation_fee_due_date.slice(0, 10) : "",
     equityPct: startup.equity_pct ?? "", revenueShareOverride: startup.revenue_share_override ?? "",
+    // 21 Nov 2026 CS batch — dynamic success-fee rates (see db.js/SuccessFeeFields).
+    introFeePct: startup.intro_fee_pct ?? "", activeCommercializationFeePct: startup.active_commercialization_fee_pct ?? "",
+    gtmShareIntroPct: startup.gtm_share_intro_pct ?? "", gtmShareCommercializationPct: startup.gtm_share_commercialization_pct ?? "",
     riv_owner: startup.riv_owner || "", status: startup.status || "Active", notes: startup.notes || "",
     legalEntity: startup.legal_entity || "", website: startup.website || "", city: startup.city || "",
     hqCountry: startup.hq_country || "", yearIncorporated: startup.year_incorporated || "",
@@ -2480,7 +2559,15 @@ function EditStartupModal({ startup, onClose, onSaved }) {
   async function save() {
     setError(""); setBusy(true);
     try {
-      const result = await api.updateStartup(startup.id, { ...form, revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride, equityPct: form.equityPct === "" ? null : form.equityPct });
+      const result = await api.updateStartup(startup.id, {
+        ...form,
+        revenueShareOverride: form.revenueShareOverride === "" ? null : form.revenueShareOverride,
+        equityPct: form.equityPct === "" ? null : form.equityPct,
+        introFeePct: form.introFeePct === "" ? null : form.introFeePct,
+        activeCommercializationFeePct: form.activeCommercializationFeePct === "" ? null : form.activeCommercializationFeePct,
+        gtmShareIntroPct: form.gtmShareIntroPct === "" ? null : form.gtmShareIntroPct,
+        gtmShareCommercializationPct: form.gtmShareCommercializationPct === "" ? null : form.gtmShareCommercializationPct,
+      });
       await onSaved(result);
       onClose();
     } catch (err) { setError(err.message); }
@@ -2551,6 +2638,7 @@ function EditStartupModal({ startup, onClose, onSaved }) {
         </select>
       </Field>
       <Field label="Anything else"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.additionalNotes} onChange={(e) => setForm({ ...form, additionalNotes: e.target.value })} /></Field>
+      <SuccessFeeFields form={form} setForm={setForm} />
       <PrimaryButton onClick={save} disabled={busy || !form.startupName} style={{ width: "100%" }}>Save changes</PrimaryButton>
     </Modal>
   );
@@ -2572,6 +2660,10 @@ function AdminStartupsView() {
     competition: "", competitiveAdvantage: "", payingCustomerCount: "", notableCustomers: "", keyMilestones: "",
     legalEntity: "", website: "", city: "", hqCountry: "", yearIncorporated: "", foundingTeamDetails: "",
     pastFundRaised: "", currentlyRaisingCapital: "", fundraisingSupportInterest: "", additionalNotes: "",
+    // 21 Nov 2026 CS batch — dynamic success-fee rates (see db.js). All
+    // four optional: left blank, admin keeps typing Intro Rate/Closure
+    // Rate by hand per introduction exactly like before this feature.
+    introFeePct: "", activeCommercializationFeePct: "", gtmShareIntroPct: "", gtmShareCommercializationPct: "",
   };
   const [form, setForm] = useState(blankForm);
   const [provisioning, setProvisioning] = useState(null);
@@ -2723,6 +2815,7 @@ function AdminStartupsView() {
             </select>
           </Field>
           <Field label="Anything else"><textarea style={{ ...inputStyle, minHeight: 50 }} value={form.additionalNotes} onChange={(e) => setForm({ ...form, additionalNotes: e.target.value })} /></Field>
+          <SuccessFeeFields form={form} setForm={setForm} />
           <PrimaryButton onClick={createStartup} disabled={!form.startupName || !form.email} style={{ width: "100%" }}>Create startup</PrimaryButton>
         </Modal>
       )}
@@ -3481,6 +3574,7 @@ export default function RiseGtmApp() {
           <RetailIntroductionsInitiatedByRivView refreshKey={refreshKey} />
         )}
         {user.role === "startup" && view === "retailers" && <RetailerDirectoryView user={user} onRequest={setRequestRetailer} />}
+        {user.role === "startup" && view === "my-fees" && <StartupFeesView />}
 
         {user.role === "admin" && view === "overview" && <AdminOverview onNavigate={setView} />}
         {user.role === "admin" && view === "partners" && <AdminPartnersView />}

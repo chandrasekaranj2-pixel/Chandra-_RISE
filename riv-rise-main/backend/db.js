@@ -487,6 +487,34 @@ async function initSchema() {
     -- SUPPORT_TYPES above. Defaults to 'Intro Only' so every pre-existing
     -- row (which never had this choice) keeps its original meaning.
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS support_type TEXT NOT NULL DEFAULT 'Intro Only';
+
+    -- 21 Nov 2026 CS batch — dynamic, per-startup success-fee rates, set
+    -- once on the startup record (not per GTM partner — every partner
+    -- working with a given startup sees/earns the same numbers). Two
+    -- fee pairs, one for each SUPPORT_TYPES value:
+    --   intro_fee_pct                   - % the startup pays RIV on an
+    --                                    "Intro Only" deal
+    --   active_commercialization_fee_pct - % the startup pays RIV on an
+    --                                    "Intro + Closure Support" deal
+    --   gtm_share_intro_pct             - % of intro_fee_pct's proceeds
+    --                                    RIV pays the GTM partner on an
+    --                                    "Intro Only" deal
+    --   gtm_share_commercialization_pct - % of active_commercialization_
+    --                                    fee_pct's proceeds RIV pays the
+    --                                    GTM partner on an "Intro +
+    --                                    Closure Support" deal
+    -- All four nullable: left blank, admin keeps typing Intro Rate/
+    -- Closure Rate by hand per introduction exactly like today, and
+    -- computePartnerFee (portal.js) falls back to the partner's own
+    -- default_payout_split/revenue_share_override exactly like today.
+    -- Deliberately separate from the pre-existing (and, in practice,
+    -- never-wired-up) startups.revenue_share_override column above —
+    -- that one is left untouched rather than repurposed, to avoid
+    -- silently changing what an existing field means.
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS intro_fee_pct NUMERIC;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS active_commercialization_fee_pct NUMERIC;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS gtm_share_intro_pct NUMERIC;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS gtm_share_commercialization_pct NUMERIC;
   `);
 
   // approval_status / engagement_stage (repurposed as Deal Status) both

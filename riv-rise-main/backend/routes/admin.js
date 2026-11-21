@@ -259,6 +259,20 @@ router.get("/startups", async (req, res, next) => {
   }
 });
 
+// 21 Nov 2026 CS batch — the 4 dynamic success-fee fields (see db.js for
+// what each means) are plain percentages, 0-100, or blank. Shared by the
+// create and edit routes below so both reject the same bad input the same
+// way, and blank/empty-string always means "not set" (NULL), never 0.
+function parsePct(value, label, errors) {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 100) {
+    errors.push(`${label} must be a number between 0 and 100 (or left blank).`);
+    return null;
+  }
+  return n;
+}
+
 router.post("/startups", async (req, res, next) => {
   try {
     const {
@@ -267,21 +281,30 @@ router.post("/startups", async (req, res, next) => {
       competition, competitiveAdvantage, payingCustomerCount, notableCustomers, keyMilestones,
       legalEntity, website, city, hqCountry, yearIncorporated, foundingTeamDetails,
       pastFundRaised, currentlyRaisingCapital, fundraisingSupportInterest, additionalNotes,
+      introFeePct, activeCommercializationFeePct, gtmShareIntroPct, gtmShareCommercializationPct,
     } = req.body || {};
     if (!startupName || !email) return res.status(400).json({ error: "startupName and email are required." });
+    const pctErrors = [];
+    const introFeePctVal = parsePct(introFeePct, "Introduction fees %", pctErrors);
+    const activeCommercializationFeePctVal = parsePct(activeCommercializationFeePct, "Active Commercialization Support fees %", pctErrors);
+    const gtmShareIntroPctVal = parsePct(gtmShareIntroPct, "GTM Partner share - Intro fees %", pctErrors);
+    const gtmShareCommercializationPctVal = parsePct(gtmShareCommercializationPct, "GTM Partner share - Active commercialization %", pctErrors);
+    if (pctErrors.length) return res.status(400).json({ error: pctErrors.join(" ") });
     const { rows } = await pool.query(
       `INSERT INTO startups
          (startup_name, founder_name, email, phone, sector, solution_summary, riv_owner,
           problem_description, solution_description, top_benefits, tech_stack, sub_vertical,
           competition, competitive_advantage, paying_customer_count, notable_customers, key_milestones,
           legal_entity, website, city, hq_country, year_incorporated, founding_team_details,
-          past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING *`,
+          past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes,
+          intro_fee_pct, active_commercialization_fee_pct, gtm_share_intro_pct, gtm_share_commercialization_pct)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31) RETURNING *`,
       [startupName, founderName || null, email, phone || null, sector || null, solutionSummary || null, riv_owner || null,
        problemDescription || null, solutionDescription || null, topBenefits || null, techStack || null, subVertical || null,
        competition || null, competitiveAdvantage || null, payingCustomerCount || null, notableCustomers || null, keyMilestones || null,
        legalEntity || null, website || null, city || null, hqCountry || null, yearIncorporated || null, foundingTeamDetails || null,
-       pastFundRaised || null, currentlyRaisingCapital || null, fundraisingSupportInterest || null, additionalNotes || null]
+       pastFundRaised || null, currentlyRaisingCapital || null, fundraisingSupportInterest || null, additionalNotes || null,
+       introFeePctVal, activeCommercializationFeePctVal, gtmShareIntroPctVal, gtmShareCommercializationPctVal]
     );
     res.status(201).json({ startup: rows[0] });
   } catch (err) {
@@ -292,6 +315,12 @@ router.post("/startups", async (req, res, next) => {
 router.put("/startups/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
+    const pctErrors = [];
+    const introFeePctVal = parsePct(f.introFeePct, "Introduction fees %", pctErrors);
+    const activeCommercializationFeePctVal = parsePct(f.activeCommercializationFeePct, "Active Commercialization Support fees %", pctErrors);
+    const gtmShareIntroPctVal = parsePct(f.gtmShareIntroPct, "GTM Partner share - Intro fees %", pctErrors);
+    const gtmShareCommercializationPctVal = parsePct(f.gtmShareCommercializationPct, "GTM Partner share - Active commercialization %", pctErrors);
+    if (pctErrors.length) return res.status(400).json({ error: pctErrors.join(" ") });
     const { rows: prevRows } = await pool.query("SELECT onboarding_stage FROM startups WHERE id = $1", [req.params.id]);
     const prevStage = prevRows[0]?.onboarding_stage;
     const { rows } = await pool.query(
@@ -312,6 +341,8 @@ router.put("/startups/:id", async (req, res, next) => {
          founding_team_details = COALESCE($32, founding_team_details), past_fund_raised = COALESCE($33, past_fund_raised),
          currently_raising_capital = COALESCE($34, currently_raising_capital),
          fundraising_support_interest = COALESCE($35, fundraising_support_interest), additional_notes = COALESCE($36, additional_notes),
+         intro_fee_pct = $37, active_commercialization_fee_pct = $38,
+         gtm_share_intro_pct = $39, gtm_share_commercialization_pct = $40,
          updated_at = now()
        WHERE id = $1 RETURNING *`,
       [
@@ -322,6 +353,7 @@ router.put("/startups/:id", async (req, res, next) => {
         f.competition, f.competitiveAdvantage, f.payingCustomerCount, f.notableCustomers, f.keyMilestones,
         f.legalEntity, f.website, f.city, f.hqCountry, f.yearIncorporated, f.foundingTeamDetails,
         f.pastFundRaised, f.currentlyRaisingCapital, f.fundraisingSupportInterest, f.additionalNotes,
+        introFeePctVal, activeCommercializationFeePctVal, gtmShareIntroPctVal, gtmShareCommercializationPctVal,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Startup not found." });
@@ -769,8 +801,11 @@ router.post("/introductions", async (req, res, next) => {
     // any one time, enforced here too (mirrors the same check in
     // portal.js's two introduction-creation routes — see
     // startupIntroCapMessage there for the "active" definition).
-    const { rows: startupNameRows } = await pool.query("SELECT startup_name FROM startups WHERE id = $1", [startupId]);
-    const capMessage = await startupIntroCapMessage(startupId, startupNameRows[0]?.startup_name);
+    const { rows: startupRows2 } = await pool.query(
+      "SELECT startup_name, intro_fee_pct, active_commercialization_fee_pct FROM startups WHERE id = $1",
+      [startupId]
+    );
+    const capMessage = await startupIntroCapMessage(startupId, startupRows2[0]?.startup_name);
     if (capMessage) return res.status(409).json({ error: capMessage });
 
     // 9 Oct 2026 batch, item 10 — this route had no duplicate-pairing check
@@ -793,10 +828,14 @@ router.post("/introductions", async (req, res, next) => {
       });
     }
 
+    const resolvedSupportType = supportType || "Intro Only";
+    // 21 Nov 2026 CS batch — same per-startup closure-rate resolution as
+    // the two routes in portal.js; see resolveClosureRate there.
+    const closureRate = portalRoutes.resolveClosureRate(startupRows2[0], resolvedSupportType);
     const { rows } = await pool.query(
-      `INSERT INTO introductions (initiated_by, startup_id, retailer_id, network_source, status, approval_status, gtm_context_note, support_type)
-       VALUES ('RIV Admin', $1, $2, $3, 'Approved', 'Startup Confirmed', $4, $5) RETURNING *`,
-      [startupId, retailerId, retailer.network_source, context || null, supportType || "Intro Only"]
+      `INSERT INTO introductions (initiated_by, startup_id, retailer_id, network_source, status, approval_status, gtm_context_note, support_type, closure_rate)
+       VALUES ('RIV Admin', $1, $2, $3, 'Approved', 'Startup Confirmed', $4, $5, $6) RETURNING *`,
+      [startupId, retailerId, retailer.network_source, context || null, resolvedSupportType, closureRate]
     );
     await notifyStartup(startupId, "New opportunity from RIV", rows[0].id);
     await notify.newOpportunity(rows[0].id);

@@ -43,7 +43,14 @@ router.get("/me", requireRole("partner", "startup", "admin"), async (req, res, n
     }
     if (isStartup(req)) {
       const { rows } = await pool.query("SELECT * FROM startups WHERE user_id = $1", [req.user.id]);
-      return res.json({ role: "startup", profile: rows[0] || null });
+      // 21 Nov 2026 CS batch — intro_fee_pct/active_commercialization_fee_pct
+      // (what THIS startup pays RIV) are fine to return here; the two
+      // gtm_share_* columns (what RIV pays a GTM partner on them) are not —
+      // stripped the same way the partner/admin-only columns are left out
+      // of GET /startups/:id's startup branch above.
+      const profile = rows[0] || null;
+      if (profile) { delete profile.gtm_share_intro_pct; delete profile.gtm_share_commercialization_pct; }
+      return res.json({ role: "startup", profile });
     }
     res.json({ role: "admin", profile: null });
   } catch (err) {
@@ -55,10 +62,19 @@ router.get("/me", requireRole("partner", "startup", "admin"), async (req, res, n
 // (PRD §6.3 step 2). View-only per the addendum — no introduce action
 // hangs off this list anymore, just enough to decide whether to open the
 // detail view.
+// 21 Nov 2026 CS batch — gtm_share_intro_pct/gtm_share_commercialization_pct
+// are the only two of the four new per-startup fee fields a GTM partner
+// ever sees (what THEY earn on this startup); intro_fee_pct/
+// active_commercialization_fee_pct (what the startup pays RIV) are never
+// included here or in the detail route below — that's between RIV and
+// the startup. Both columns are safe to show even when NULL — the
+// frontend just doesn't have a number to render yet for a startup admin
+// hasn't configured a rate for.
 router.get("/startups", requireRole("partner", "admin"), async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, startup_name, founder_name, sector, solution_summary
+      `SELECT id, startup_name, founder_name, sector, solution_summary,
+              gtm_share_intro_pct, gtm_share_commercialization_pct
        FROM startups WHERE status = 'Active' ORDER BY startup_name`
     );
     res.json({ startups: rows });
@@ -71,15 +87,25 @@ router.get("/startups", requireRole("partner", "admin"), async (req, res, next) 
 // (addendum §4). Same "nothing sensitive" bar as the list above, just
 // every field a GTM partner needs to assess the startup before backing an
 // introduction with their reputation.
+//
+// 21 Nov 2026 CS batch — gtm_share_intro_pct/gtm_share_commercialization_pct
+// (what a GTM partner earns on this startup) are added ONLY for the
+// partner/admin case, same split as the list route above. This route is
+// shared across all three roles, so the startup branch deliberately
+// leaves those two columns out rather than filtering them after the
+// query — a startup never sees what RIV pays a partner on their own deal.
 router.get("/startups/:id", requireRole("partner", "startup", "admin"), async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT id, startup_name, founder_name, sector, solution_summary, problem_description,
+    const sharedColumns = `id, startup_name, founder_name, sector, solution_summary, problem_description,
               solution_description, top_benefits, tech_stack, sub_vertical, competition,
               competitive_advantage, paying_customer_count, notable_customers, key_milestones,
               legal_entity, website, city, hq_country, year_incorporated, founding_team_details,
-              past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes
-       FROM startups WHERE id = $1 AND status = 'Active'`,
+              past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes`;
+    const columns = req.user.role === "startup"
+      ? sharedColumns
+      : `${sharedColumns}, gtm_share_intro_pct, gtm_share_commercialization_pct`;
+    const { rows } = await pool.query(
+      `SELECT ${columns} FROM startups WHERE id = $1 AND status = 'Active'`,
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "Startup not found." });
@@ -377,7 +403,7 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
     // Sent as a multipart form field now, so it arrives as the string "true", not a boolean.
     if (consentAccepted !== "true") return res.status(400).json({ error: "You must accept the Terms & Conditions to submit a request." });
 
-    const { rows: s } = await pool.query("SELECT id FROM startups WHERE user_id = $1", [req.user.id]);
+    const { rows: s } = await pool.query("SELECT id, intro_fee_pct, active_commercialization_fee_pct FROM startups WHERE user_id = $1", [req.user.id]);
     const startupId = s[0]?.id;
     if (!startupId) return res.status(403).json({ error: "No startup profile linked to this login." });
 
@@ -413,19 +439,25 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
     );
     const duplicateOfIntroductionId = dupRows[0]?.id || null;
 
+    // 21 Nov 2026 CS batch — this route never sets support_type (it's a
+    // startup-initiated request, always 'Intro Only' per the column
+    // default), so the rate always comes from this startup's configured
+    // Introduction fees %, falling back to the long-standing flat default.
+    const closureRate = resolveClosureRate(s[0], "Intro Only");
+
     const { rows } = await pool.query(
       `INSERT INTO introductions
          (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
           why_interested, problem_solved, relevant_offering, buyer_persona, previously_engaged,
           prior_engagement_details, supporting_material, consent_accepted, consent_accepted_at,
-          duplicate_of_introduction_id)
+          duplicate_of_introduction_id, closure_rate)
        VALUES ('Startup', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested',
-               $5, $6, $7, $8, $9, $10, $11::jsonb, true, now(), $12)
+               $5, $6, $7, $8, $9, $10, $11::jsonb, true, now(), $12, $13)
        RETURNING *`,
       [partnerId, startupId, retailerId, retailer.network_source,
        whyInterested || null, problemSolved || null, relevantOffering || null, buyerPersona || null,
        previouslyEngaged === "true", priorEngagementDetails || null, JSON.stringify(supportingMaterial),
-       duplicateOfIntroductionId]
+       duplicateOfIntroductionId, closureRate]
     );
     // Acknowledgement email (addendum) — sent once the row is committed, and
     // BEFORE responding: this app runs as a Netlify Function, and a
@@ -497,7 +529,10 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
       "SELECT network_source FROM retailers WHERE id = $1 AND status = 'Active in network'", [retailerId]
     );
     if (!retailerRows[0]) return res.status(404).json({ error: "Retailer not found or not yet approved." });
-    const { rows: startupRows } = await pool.query("SELECT id, startup_name FROM startups WHERE id = $1 AND status = 'Active'", [startupId]);
+    const { rows: startupRows } = await pool.query(
+      "SELECT id, startup_name, intro_fee_pct, active_commercialization_fee_pct FROM startups WHERE id = $1 AND status = 'Active'",
+      [startupId]
+    );
     if (!startupRows[0]) return res.status(404).json({ error: "Startup not found or not yet approved." });
 
     // 18 Nov 2026 batch, item 1 — max 5 active introductions per startup at
@@ -525,13 +560,16 @@ async function createPartnerInitiatedIntroduction(req, res, next) {
       });
     }
 
+    const resolvedSupportType = supportType || "Intro Only";
+    // 21 Nov 2026 CS batch — see resolveClosureRate for the fallback logic.
+    const closureRate = resolveClosureRate(startupRows[0], resolvedSupportType);
     const { rows } = await pool.query(
       `INSERT INTO introductions
          (initiated_by, partner_id, startup_id, retailer_id, network_source, approval_status, status,
-          gtm_context_note, consent_accepted, consent_accepted_at, support_type)
-       VALUES ('GTM Partner', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested', $5, true, now(), $6)
+          gtm_context_note, consent_accepted, consent_accepted_at, support_type, closure_rate)
+       VALUES ('GTM Partner', $1, $2, $3, $4, 'Pending RIV Approval', 'Requested', $5, true, now(), $6, $7)
        RETURNING *`,
-      [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null, supportType || "Intro Only"]
+      [partnerId, startupId, retailerId, retailerRows[0].network_source, opportunityContext || null, resolvedSupportType, closureRate]
     );
     await notifyAdmins("New partner-initiated introduction", rows[0].id);
     await notifyEmail.rivAlert(rows[0].id, "New partner-initiated introduction", (i) =>
@@ -905,6 +943,25 @@ async function ownsIntro(req, intro) {
   return intro.startup_id === rows[0]?.id;
 }
 
+// 21 Nov 2026 CS batch — the operative success-fee rate (closure_rate,
+// used everywhere as feeAmountDue = dealValue * closure_rate / 100) now
+// comes from the STARTUP being introduced, chosen by the introduction's
+// support_type, instead of always being closure_rate's flat column
+// default. Falls back to that same default (25) when the startup hasn't
+// configured a rate for this support_type — so a startup admin hasn't
+// touched yet keeps behaving exactly as it always has, and existing rows
+// are untouched (this only affects introductions created from here on).
+// intro_rate is a separate, legacy column that was never wired into any
+// computation — left untouched on purpose, not to be confused with the
+// new "Introduction fees %" startup field despite the similar name.
+const DEFAULT_CLOSURE_RATE = 25;
+function resolveClosureRate(startup, supportType) {
+  const pct = supportType === "Intro + Closure Support"
+    ? startup?.active_commercialization_fee_pct
+    : startup?.intro_fee_pct;
+  return (pct === null || pct === undefined) ? DEFAULT_CLOSURE_RATE : Number(pct);
+}
+
 // Expected GTM Success Fee (18 Sep 2026 decision): the partner's cut of
 // the closure fee, LOCKED IN at Closed-Won time rather than recomputed
 // live off the partner's current rate — so a later change to that
@@ -916,12 +973,33 @@ async function ownsIntro(req, intro) {
 // in full even when the retailer happens to sit in that partner's
 // network. Shared by portal.js's confirm-sale and admin.js's manual
 // Closed-Won override so both paths compute it identically.
+//
+// 21 Nov 2026 CS batch — the rate now comes from the STARTUP first (one
+// of the two gtm_share_* fields, chosen by this introduction's
+// support_type), and only falls back to the partner's own
+// default_payout_split/revenue_share_override when the startup's field
+// for that support_type was left blank — so nothing changes for a
+// startup admin hasn't configured yet, and a startup's own rate always
+// wins once it's set, no matter which partner brought the deal.
 async function computePartnerFee(intro, feeAmountDue) {
   if (intro.initiated_by !== "GTM Partner" || !intro.partner_id) return { partnerFeePct: null, partnerFeeAmount: null };
-  const { rows } = await pool.query("SELECT default_payout_split, revenue_share_override FROM partners WHERE id = $1", [intro.partner_id]);
-  const partner = rows[0];
-  if (!partner) return { partnerFeePct: null, partnerFeeAmount: null };
-  const pct = Number(partner.revenue_share_override ?? partner.default_payout_split);
+  const { rows: startupRows } = await pool.query(
+    "SELECT gtm_share_intro_pct, gtm_share_commercialization_pct FROM startups WHERE id = $1",
+    [intro.startup_id]
+  );
+  const startup = startupRows[0];
+  const startupPct = intro.support_type === "Intro + Closure Support"
+    ? startup?.gtm_share_commercialization_pct
+    : startup?.gtm_share_intro_pct;
+  let pct;
+  if (startupPct !== null && startupPct !== undefined) {
+    pct = Number(startupPct);
+  } else {
+    const { rows } = await pool.query("SELECT default_payout_split, revenue_share_override FROM partners WHERE id = $1", [intro.partner_id]);
+    const partner = rows[0];
+    if (!partner) return { partnerFeePct: null, partnerFeeAmount: null };
+    pct = Number(partner.revenue_share_override ?? partner.default_payout_split);
+  }
   return { partnerFeePct: pct, partnerFeeAmount: Number(feeAmountDue) * (pct / 100) };
 }
 // Exposed as a property on the router (not a bare module.exports.* line,
@@ -941,6 +1019,9 @@ router.interestStatusForServer = interestStatusForServer;
 // not just the two routes in this file. Exposed the same way as
 // computePartnerFee/LIVE_PAIRING_SQL just above.
 router.startupIntroCapMessage = startupIntroCapMessage;
+// 21 Nov 2026 CS batch — admin's own "New Introduction" route needs the
+// same per-startup closure-rate resolution as the two routes in this file.
+router.resolveClosureRate = resolveClosureRate;
 
 // Small notification-log helpers.
 async function notify(poolRef, type, introId, recipientRole, recipientProfileId) {
