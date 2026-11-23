@@ -2272,9 +2272,13 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
       <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
       <Field label="Default payout split (%)"><input style={inputStyle} type="number" step="0.1" value={form.defaultPayoutSplit} onChange={(e) => setForm({ ...form, defaultPayoutSplit: e.target.value })} /></Field>
-      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
-        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
-      </Field>
+      {/* 23 Nov 2026 CS batch — "Revenue share override (%)" field removed
+          from view per explicit request, now that the per-startup fee
+          fields (intro/active-commercialization %, GTM share %) are the
+          real way to set rates. The underlying column and its use as a
+          fallback in computePartnerFee are left untouched — this form
+          still round-trips whatever value a partner record already has,
+          it's just no longer editable here. */}
       <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
       <Field label="Status">
         <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
@@ -2602,9 +2606,14 @@ function EditStartupModal({ startup, onClose, onSaved }) {
       </Field>
       <Field label="Participation fee due date"><input style={inputStyle} type="date" value={form.participationFeeDueDate} onChange={(e) => setForm({ ...form, participationFeeDueDate: e.target.value })} /></Field>
       <Field label="Equity (%)"><input style={inputStyle} type="number" step="0.01" value={form.equityPct} onChange={(e) => setForm({ ...form, equityPct: e.target.value })} /></Field>
-      <Field label="Revenue share override (%)" hint="Leave blank to use RIV's standard rate.">
-        <input style={inputStyle} type="number" step="0.1" value={form.revenueShareOverride} onChange={(e) => setForm({ ...form, revenueShareOverride: e.target.value })} />
-      </Field>
+      {/* 23 Nov 2026 CS batch — "Revenue share override (%)" field removed
+          from view per explicit request, now that the 4 dynamic per-startup
+          fee fields (Introduction fee %, Active Commercialization Support
+          fee %, GTM share %) are the real way to set rates here. The
+          underlying startups.revenue_share_override column is untouched and
+          was never read by any fee computation anyway — this form still
+          round-trips whatever value a startup record already has, it's just
+          no longer editable here. */}
       <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
       <Field label="Status">
         <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>

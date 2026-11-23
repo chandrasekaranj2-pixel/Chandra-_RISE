@@ -199,6 +199,20 @@ router.post("/partners/:id/provision-login", async (req, res, next) => {
     const partner = partnerRows[0];
     if (!partner) return res.status(404).json({ error: "Partner not found." });
 
+    // 23 Nov 2026 CS batch — the INSERT below is an upsert keyed on email:
+    // if this email already belongs to a user of a DIFFERENT role (most
+    // dangerously, an admin), ON CONFLICT would silently flip that
+    // existing account over to 'partner' and reset its password. Caught
+    // live when granting a startup's portal access to an admin's email
+    // demoted that admin account to a startup. Block it here instead.
+    const { rows: conflictRows } = await pool.query("SELECT id, role FROM users WHERE email = $1", [partner.email]);
+    const conflictingUser = conflictRows[0];
+    if (conflictingUser && conflictingUser.role !== "partner") {
+      return res.status(409).json({
+        error: `${partner.email} is already a ${conflictingUser.role} account on RISE. Granting portal access here would overwrite that account's role. Use a different email for this partner, or resolve the conflict in Supabase first.`,
+      });
+    }
+
     // Only the FIRST provisioning gets the "login is ready" email; the same
     // route also resets a password, which shouldn't email anyone.
     const firstTime = partner.portal_login_status !== "Provisioned";
@@ -455,6 +469,18 @@ router.post("/startups/:id/provision-login", async (req, res, next) => {
     const { rows: startupRows } = await pool.query("SELECT * FROM startups WHERE id = $1", [req.params.id]);
     const startup = startupRows[0];
     if (!startup) return res.status(404).json({ error: "Startup not found." });
+
+    // 23 Nov 2026 CS batch — same guard as the partner route above: block
+    // granting portal access when this email already belongs to a
+    // different-role user (e.g. an admin), rather than silently
+    // overwriting that account's role via the upsert below.
+    const { rows: conflictRows } = await pool.query("SELECT id, role FROM users WHERE email = $1", [startup.email]);
+    const conflictingUser = conflictRows[0];
+    if (conflictingUser && conflictingUser.role !== "startup") {
+      return res.status(409).json({
+        error: `${startup.email} is already a ${conflictingUser.role} account on RISE. Granting portal access here would overwrite that account's role. Use a different email for this startup, or resolve the conflict in Supabase first.`,
+      });
+    }
 
     const firstTime = startup.portal_login_status !== "Provisioned";
     const password_hash = bcrypt.hashSync(password || crypto.randomBytes(32).toString("hex"), 10);
