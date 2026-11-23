@@ -2275,14 +2275,19 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       </Field>
       <Field label="Agreement link"><input style={inputStyle} value={form.agreementLink} onChange={(e) => setForm({ ...form, agreementLink: e.target.value })} /></Field>
       <Field label="Agreement signed date"><input style={inputStyle} type="date" value={form.agreementSignedDate} onChange={(e) => setForm({ ...form, agreementSignedDate: e.target.value })} /></Field>
-      <Field label="Default payout split (%)"><input style={inputStyle} type="number" step="0.1" value={form.defaultPayoutSplit} onChange={(e) => setForm({ ...form, defaultPayoutSplit: e.target.value })} /></Field>
-      {/* 23 Nov 2026 CS batch — "Revenue share override (%)" field removed
-          from view per explicit request, now that the per-startup fee
-          fields (intro/active-commercialization %, GTM share %) are the
-          real way to set rates. The underlying column and its use as a
-          fallback in computePartnerFee are left untouched — this form
-          still round-trips whatever value a partner record already has,
-          it's just no longer editable here. */}
+      {/* 23 Nov 2026 CS batch — "Default payout split (%)" and "Revenue
+          share override (%)" both removed from view per explicit request,
+          now that the per-startup fee fields (intro/active-
+          commercialization %, GTM share %) are the real way to set rates.
+          Unlike revenue_share_override, default_payout_split is NOT dead
+          code — it's still the live fallback computePartnerFee uses
+          whenever a startup has no per-startup GTM share set (DB default
+          66.7%). Removing this field means every partner now shares that
+          one fixed fallback with no per-partner override via the UI —
+          confirmed as the intended tradeoff. The column itself and its use
+          in computePartnerFee are left untouched; this form still
+          round-trips whatever value a partner record already has, it's
+          just no longer editable here. */}
       <Field label="RIV owner"><input style={inputStyle} value={form.riv_owner} onChange={(e) => setForm({ ...form, riv_owner: e.target.value })} /></Field>
       <Field label="Status">
         <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
