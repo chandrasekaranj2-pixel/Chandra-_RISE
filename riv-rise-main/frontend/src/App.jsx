@@ -2682,6 +2682,8 @@ function AdminStartupsView() {
   // result (onSaved={load}) and never told admin either way.
   const [warning, setWarning] = useState("");
   const [showNew, setShowNew] = useState(false);
+  // 23 Nov 2026 CS batch — parity with AdminPartnersView's resend control.
+  const [resendingId, setResendingId] = useState(null);
   const blankForm = {
     startupName: "", founderName: "", email: "", sector: "", solutionSummary: "",
     problemDescription: "", solutionDescription: "", topBenefits: "", techStack: "", subVertical: "",
@@ -2729,6 +2731,19 @@ function AdminStartupsView() {
     if (!notice) return;
     if (notice.kind === "ok") { setWarning(""); showSuccess(notice.text); } else setWarning(notice.text);
   }
+  // 23 Nov 2026 CS batch — manual re-send, same pattern as
+  // AdminPartnersView.resendWelcome(). force:true on the backend route
+  // skips the once-only claim, so this always actually sends.
+  async function resendWelcome(s) {
+    setResendingId(s.id); setWarning("");
+    try {
+      const r = await api.resendStartupWelcome(s.id);
+      const notice = welcomeEmailNotice(r.welcomeEmail, s.email);
+      if (notice?.kind === "ok") showSuccess(notice.text); else if (notice) setWarning(notice.text);
+      load();
+    } catch (e) { setWarning(e.message); }
+    finally { setResendingId(null); }
+  }
   async function provision(s) {
     if (provisionBusy) return;
     setError(""); setProvisionBusy(true);
@@ -2771,7 +2786,10 @@ function AdminStartupsView() {
           <div>
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{s.startup_name}</div>
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{s.email} · {s.sector || "—"}</div>
-            <div style={{ fontFamily: FONT, fontSize: 11, color: "#B7B2AE", marginTop: 5 }}>Stage: {s.onboarding_stage} · Fee: {s.participation_fee_status} · Login: {s.portal_login_status}</div>
+            <div style={{ fontFamily: FONT, fontSize: 11, color: "#B7B2AE", marginTop: 5 }}>
+              Stage: {s.onboarding_stage} · Fee: {s.participation_fee_status} · Login: {s.portal_login_status}
+              {s.onboarding_stage === "Onboarded" && ` · Welcome email: ${s.welcome_email_sent_at ? "sent" : "not sent"}`}
+            </div>
             {/* item 12 (25 Sep 2026 batch) — inline metrics from GET
                 /admin/startups' new aggregate subqueries (admin.js). */}
             <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#7A756F", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -2783,6 +2801,11 @@ function AdminStartupsView() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <GhostButton onClick={() => setDetailStartupId(s.id)}>View Details</GhostButton>
             <GhostButton onClick={() => setEditingStartup(s)}>Edit</GhostButton>
+            {s.onboarding_stage === "Onboarded" && (
+              <GhostButton onClick={() => resendWelcome(s)} disabled={resendingId === s.id}>
+                {resendingId === s.id ? "Sending…" : "Resend welcome email"}
+              </GhostButton>
+            )}
             {/* 3 Nov 2026 fix — same reset-password gate removed as on the
                 Partners card; see comment there. Nov 2026 passwordless
                 change: same split as the Partners card — "Grant Portal
