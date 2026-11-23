@@ -128,10 +128,26 @@ router.post("/partners", async (req, res, next) => {
 router.put("/partners/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
-    const { rows: prevRows } = await pool.query("SELECT onboarding_stage FROM partners WHERE id = $1", [req.params.id]);
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage, email FROM partners WHERE id = $1", [req.params.id]);
     const prevStage = prevRows[0]?.onboarding_stage;
+    const prevEmail = prevRows[0]?.email;
+    // 23 Nov 2026 CS batch — same login-email editing support as the
+    // startup route above; see its comment for the full reasoning.
+    const newEmail = typeof f.email === "string" ? f.email.trim() : "";
+    const emailChanged = newEmail && newEmail.toLowerCase() !== (prevEmail || "").toLowerCase();
+    if (emailChanged) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) return res.status(400).json({ error: "That doesn't look like a valid email address." });
+      const { rows: conflictRows } = await pool.query("SELECT role FROM users WHERE email = $1", [newEmail]);
+      const conflictingUser = conflictRows[0];
+      if (conflictingUser && conflictingUser.role !== "partner") {
+        return res.status(409).json({ error: `${newEmail} is already a ${conflictingUser.role} account on RISE. Choose a different email for this partner.` });
+      }
+    }
     const { rows } = await pool.query(
       `UPDATE partners SET
+         email = COALESCE($22, email),
+         user_id = CASE WHEN $23::boolean THEN NULL ELSE user_id END,
+         portal_login_status = CASE WHEN $23::boolean THEN 'Not Provisioned' ELSE portal_login_status END,
          full_name = COALESCE($2, full_name), company = COALESCE($3, company), phone = COALESCE($4, phone),
          linkedin_url = COALESCE($5, linkedin_url), sector_focus = COALESCE($6, sector_focus), region = COALESCE($7, region),
          onboarding_stage = COALESCE($8, onboarding_stage), agreement_link = COALESCE($9, agreement_link),
@@ -148,6 +164,7 @@ router.put("/partners/:id", async (req, res, next) => {
         f.revenueShareOverride === "" ? null : (f.revenueShareOverride ?? null), f.riv_owner, f.status, f.notes,
         f.city, f.country, f.designation, Array.isArray(f.partnerTypes) ? f.partnerTypes : null,
         f.pastRetailOrganizations, f.retailExpertise,
+        emailChanged ? newEmail : null, emailChanged,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
@@ -335,10 +352,35 @@ router.put("/startups/:id", async (req, res, next) => {
     const gtmShareIntroPctVal = parsePct(f.gtmShareIntroPct, "GTM Partner share - Intro fees %", pctErrors);
     const gtmShareCommercializationPctVal = parsePct(f.gtmShareCommercializationPct, "GTM Partner share - Active commercialization %", pctErrors);
     if (pctErrors.length) return res.status(400).json({ error: pctErrors.join(" ") });
-    const { rows: prevRows } = await pool.query("SELECT onboarding_stage FROM startups WHERE id = $1", [req.params.id]);
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage, email FROM startups WHERE id = $1", [req.params.id]);
     const prevStage = prevRows[0]?.onboarding_stage;
+    const prevEmail = prevRows[0]?.email;
+    // 23 Nov 2026 CS batch — login email editing. The email field was
+    // previously always disabled in the UI ("change by re-provisioning"),
+    // but that left no self-service way to fix a startup accidentally
+    // provisioned onto someone else's email (e.g. an admin's) short of
+    // editing Postgres directly. Now editable; when it actually changes:
+    //  - reject it outright if it already belongs to a different-role
+    //    user (same guard as Grant Portal Access, so this can't recreate
+    //    the exact incident that prompted this change);
+    //  - otherwise clear user_id/portal_login_status, since the OLD
+    //    provisioned login (if any) was for the OLD email — admin needs
+    //    to click "Grant Portal Access" again for the new one.
+    const newEmail = typeof f.email === "string" ? f.email.trim() : "";
+    const emailChanged = newEmail && newEmail.toLowerCase() !== (prevEmail || "").toLowerCase();
+    if (emailChanged) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) return res.status(400).json({ error: "That doesn't look like a valid email address." });
+      const { rows: conflictRows } = await pool.query("SELECT role FROM users WHERE email = $1", [newEmail]);
+      const conflictingUser = conflictRows[0];
+      if (conflictingUser && conflictingUser.role !== "startup") {
+        return res.status(409).json({ error: `${newEmail} is already a ${conflictingUser.role} account on RISE. Choose a different email for this startup.` });
+      }
+    }
     const { rows } = await pool.query(
       `UPDATE startups SET
+         email = COALESCE($41, email),
+         user_id = CASE WHEN $42::boolean THEN NULL ELSE user_id END,
+         portal_login_status = CASE WHEN $42::boolean THEN 'Not Provisioned' ELSE portal_login_status END,
          startup_name = COALESCE($2, startup_name), founder_name = COALESCE($3, founder_name), phone = COALESCE($4, phone),
          sector = COALESCE($5, sector), solution_summary = COALESCE($6, solution_summary),
          onboarding_stage = COALESCE($7, onboarding_stage), agreement_link = COALESCE($8, agreement_link),
@@ -368,6 +410,7 @@ router.put("/startups/:id", async (req, res, next) => {
         f.legalEntity, f.website, f.city, f.hqCountry, f.yearIncorporated, f.foundingTeamDetails,
         f.pastFundRaised, f.currentlyRaisingCapital, f.fundraisingSupportInterest, f.additionalNotes,
         introFeePctVal, activeCommercializationFeePctVal, gtmShareIntroPctVal, gtmShareCommercializationPctVal,
+        emailChanged ? newEmail : null, emailChanged,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: "Startup not found." });

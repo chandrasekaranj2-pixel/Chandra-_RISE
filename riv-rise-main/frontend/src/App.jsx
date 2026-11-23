@@ -2219,6 +2219,10 @@ function AdminOverview({ onNavigate }) {
 // would silently do nothing.
 function EditPartnerModal({ partner, onClose, onSaved }) {
   const [form, setForm] = useState({
+    // 23 Nov 2026 CS batch — login email is now editable here (was
+    // previously locked, "change by re-provisioning"); see save() and the
+    // Email field below.
+    email: partner.email || "",
     fullName: partner.full_name || "", company: partner.company || "", phone: partner.phone || "",
     linkedinUrl: partner.linkedin_url || "", region: partner.region || "",
     city: partner.city || "", country: partner.country || "", designation: partner.designation || "",
@@ -2245,8 +2249,8 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   return (
     <Modal title={`Edit ${partner.full_name}`} onClose={onClose} width={560}>
       <ErrorBanner text={error} />
-      <Field label="Email" hint="Login email — change by re-provisioning.">
-        <input style={{ ...inputStyle, color: "#9B958F" }} value={partner.email} disabled />
+      <Field label="Email" hint="Changing this clears portal access — you'll need to click Grant Portal Access again for the new address.">
+        <input style={inputStyle} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
       </Field>
       <Field label="Full Name"><input style={inputStyle} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
       <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
@@ -2539,6 +2543,10 @@ function SuccessFeeFields({ form, setForm }) {
 // for the same reason as EditPartnerModal.
 function EditStartupModal({ startup, onClose, onSaved }) {
   const [form, setForm] = useState({
+    // 23 Nov 2026 CS batch — login email is now editable here (was
+    // previously locked, "change by re-provisioning"); see save() and the
+    // Email field below.
+    email: startup.email || "",
     startupName: startup.startup_name || "", founderName: startup.founder_name || "", phone: startup.phone || "",
     sector: startup.sector || "", solutionSummary: startup.solution_summary || "",
     onboardingStage: startup.onboarding_stage || "New", agreementLink: startup.agreement_link || "",
@@ -2585,7 +2593,9 @@ function EditStartupModal({ startup, onClose, onSaved }) {
   return (
     <Modal title={`Edit ${startup.startup_name}`} onClose={onClose} width={560}>
       <ErrorBanner text={error} />
-      <Field label="Email" hint="Login email — change by re-provisioning."><input style={{ ...inputStyle, color: "#9B958F" }} value={startup.email} disabled /></Field>
+      <Field label="Email" hint="Changing this clears portal access — you'll need to click Grant Portal Access again for the new address.">
+        <input style={inputStyle} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+      </Field>
       <Field label="Startup name"><input style={inputStyle} value={form.startupName} onChange={(e) => setForm({ ...form, startupName: e.target.value })} /></Field>
       <Field label="Founder name"><input style={inputStyle} value={form.founderName} onChange={(e) => setForm({ ...form, founderName: e.target.value })} /></Field>
       <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
