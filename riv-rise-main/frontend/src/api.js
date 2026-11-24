@@ -195,6 +195,10 @@ export const api = {
   // missing client-side wrapper.
   resendPartnerWelcome: (id) => request(`/admin/partners/${id}/send-welcome-email`, { method: "POST" }),
   resendStartupWelcome: (id) => request(`/admin/startups/${id}/send-welcome-email`, { method: "POST" }),
+  // 24 Nov 2026 CS batch — session-security Phase 2's manual "Force
+  // sign-out" button.
+  forcePartnerSignOut: (id) => request(`/admin/partners/${id}/force-signout`, { method: "POST" }),
+  forceStartupSignOut: (id) => request(`/admin/startups/${id}/force-signout`, { method: "POST" }),
   listStartups: (archived) => request(`/admin/startups${archived ? "?archived=true" : ""}`),
   createStartup: (payload) => request("/admin/startups", { method: "POST", body: payload }),
   updateStartup: (id, payload) => request(`/admin/startups/${id}`, { method: "PUT", body: payload }),

@@ -5,7 +5,7 @@ const { Router } = require("express");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, SUPPORT_TYPES } = require("../db.js");
-const { requireAuth, requireAdmin } = require("../middleware/auth.js");
+const { requireAuth, requireAdmin, forceSignOutUser } = require("../middleware/auth.js");
 const portalRoutes = require("./portal.js");
 const { computePartnerFee, startupIntroCapMessage } = portalRoutes;
 const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMaterialStorage.js");
@@ -160,9 +160,10 @@ router.post("/partners", async (req, res, next) => {
 router.put("/partners/:id", async (req, res, next) => {
   try {
     const f = req.body || {};
-    const { rows: prevRows } = await pool.query("SELECT onboarding_stage, email FROM partners WHERE id = $1", [req.params.id]);
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage, email, status, user_id FROM partners WHERE id = $1", [req.params.id]);
     const prevStage = prevRows[0]?.onboarding_stage;
     const prevEmail = prevRows[0]?.email;
+    const prevStatus = prevRows[0]?.status;
     // 23 Nov 2026 CS batch — same login-email editing support as the
     // startup route above; see its comment for the full reasoning.
     const newEmail = typeof f.email === "string" ? f.email.trim() : "";
@@ -209,6 +210,16 @@ router.put("/partners/:id", async (req, res, next) => {
       welcomeEmail = await sendPartnerWelcomeOnce(partner);
       if (welcomeEmail === "sent") partner = { ...partner, welcome_email_sent_at: new Date().toISOString() };
     }
+
+    // 24 Nov 2026 CS batch — session-security Phase 2's "offboarding safety
+    // net": the moment a partner's status transitions INTO Inactive, kill
+    // any session they're already logged in with, instead of just blocking
+    // future logins. Same transition-only pattern as the welcome email
+    // above — never re-fires on a later save of an already-Inactive partner.
+    if (partner.status === "Inactive" && prevStatus !== "Inactive" && partner.user_id) {
+      await forceSignOutUser(partner.user_id);
+    }
+
     res.json({ partner, ...(welcomeEmail && welcomeEmail !== "already-sent" ? { welcomeEmail } : {}) });
   } catch (err) {
     next(err);
@@ -226,6 +237,23 @@ router.post("/partners/:id/send-welcome-email", async (req, res, next) => {
     }
     const welcomeEmail = await sendPartnerWelcomeOnce(partner, { force: true });
     res.json({ ok: true, email: partner.email, welcomeEmail });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/partners/:id/force-signout — session-security Phase 2's
+// manual "Force sign-out" button: immediately kills every session this
+// partner is currently logged in with (they stay able to log back in,
+// unless/until their status is also set to Inactive).
+router.post("/partners/:id/force-signout", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT user_id FROM partners WHERE id = $1", [req.params.id]);
+    const partner = rows[0];
+    if (!partner) return res.status(404).json({ error: "Partner not found." });
+    if (!partner.user_id) return res.status(400).json({ error: "This partner doesn't have portal access set up." });
+    await forceSignOutUser(partner.user_id);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -421,9 +449,10 @@ router.put("/startups/:id", async (req, res, next) => {
     const gtmShareIntroPctVal = parsePct(f.gtmShareIntroPct, "GTM Partner share - Intro fees %", pctErrors);
     const gtmShareCommercializationPctVal = parsePct(f.gtmShareCommercializationPct, "GTM Partner share - Active commercialization %", pctErrors);
     if (pctErrors.length) return res.status(400).json({ error: pctErrors.join(" ") });
-    const { rows: prevRows } = await pool.query("SELECT onboarding_stage, email FROM startups WHERE id = $1", [req.params.id]);
+    const { rows: prevRows } = await pool.query("SELECT onboarding_stage, email, status, user_id FROM startups WHERE id = $1", [req.params.id]);
     const prevStage = prevRows[0]?.onboarding_stage;
     const prevEmail = prevRows[0]?.email;
+    const prevStatus = prevRows[0]?.status;
     // 23 Nov 2026 CS batch — login email editing. The email field was
     // previously always disabled in the UI ("change by re-provisioning"),
     // but that left no self-service way to fix a startup accidentally
@@ -497,6 +526,13 @@ router.put("/startups/:id", async (req, res, next) => {
       welcomeEmail = await sendWelcomeOnce(startup);
       if (welcomeEmail === "sent") startup = { ...startup, welcome_email_sent_at: new Date().toISOString() };
     }
+
+    // 24 Nov 2026 CS batch — session-security Phase 2's "offboarding safety
+    // net" — see the identical comment on PUT /partners/:id above.
+    if (startup.status === "Inactive" && prevStatus !== "Inactive" && startup.user_id) {
+      await forceSignOutUser(startup.user_id);
+    }
+
     res.json({ startup, ...(welcomeEmail && welcomeEmail !== "already-sent" ? { welcomeEmail } : {}) });
   } catch (err) {
     next(err);
@@ -567,6 +603,21 @@ const sendPartnerWelcomeOnce = (partner, opts) =>
     rivOwner: partner.riv_owner,
     hasPortalLogin: !!partner.user_id,
   }), opts);
+
+// POST /api/admin/startups/:id/force-signout — same manual "Force sign-out"
+// as partners above.
+router.post("/startups/:id/force-signout", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT user_id FROM startups WHERE id = $1", [req.params.id]);
+    const startup = rows[0];
+    if (!startup) return res.status(404).json({ error: "Startup not found." });
+    if (!startup.user_id) return res.status(400).json({ error: "This startup doesn't have portal access set up." });
+    await forceSignOutUser(startup.user_id);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.post("/startups/:id/provision-login", async (req, res, next) => {
   try {

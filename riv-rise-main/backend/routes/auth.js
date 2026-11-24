@@ -2,7 +2,7 @@ const { Router } = require("express");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const { pool } = require("../db.js");
-const { requireAuth, signToken } = require("../middleware/auth.js");
+const { requireAuth, createSession } = require("../middleware/auth.js");
 const email = require("../lib/email.js");
 
 const router = Router();
@@ -40,7 +40,7 @@ router.post("/login", async (req, res, next) => {
     }
     if (!(await isAccountActive(user))) return res.status(403).json({ error: DEACTIVATED_MESSAGE });
 
-    const token = signToken(user);
+    const token = await createSession(user);
     res.json({
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company },
@@ -170,7 +170,7 @@ router.post("/verify-code", async (req, res, next) => {
 
     await pool.query("UPDATE login_codes SET used_at = now() WHERE id = $1", [codeRow.id]);
 
-    const token = signToken(user);
+    const token = await createSession(user);
     res.json({
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company },
@@ -215,7 +215,7 @@ router.post("/google", async (req, res, next) => {
     }
     if (!(await isAccountActive(user))) return res.status(403).json({ error: DEACTIVATED_MESSAGE });
 
-    const token = signToken(user);
+    const token = await createSession(user);
     res.json({
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company },

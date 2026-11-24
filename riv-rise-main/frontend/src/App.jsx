@@ -2355,6 +2355,9 @@ function AdminPartnersView() {
   const [provisionBusy, setProvisionBusy] = useState(false);
   const [editingPartner, setEditingPartner] = useState(null);
   const [resendingId, setResendingId] = useState(null);
+  // 24 Nov 2026 CS batch — session-security Phase 2's manual "Force
+  // sign-out" button.
+  const [signingOutId, setSigningOutId] = useState(null);
   // 24 Nov 2026 CS batch — soft-archive, same pattern as
   // AdminIntroductionsView's showArchived/lastArchiveAction.
   const [showArchived, setShowArchived] = useState(false);
@@ -2444,6 +2447,16 @@ function AdminPartnersView() {
     try { await api.unarchivePartner(p.id); setLastArchiveAction({ type: "Unarchived", label: p.full_name }); load(); }
     catch (e) { setError(e.message); }
   }
+  // 24 Nov 2026 CS batch — session-security Phase 2. Kills any session this
+  // partner is currently logged in with, right now — distinct from
+  // Archive/status, which only affect future logins.
+  async function forceSignOut(p) {
+    if (!window.confirm(`Force sign-out ${p.full_name}? They'll be signed out of RISE immediately on any device, and will need to log in again.`)) return;
+    setSigningOutId(p.id); setWarning("");
+    try { await api.forcePartnerSignOut(p.id); showSuccess(`${p.full_name} has been signed out.`); }
+    catch (e) { setWarning(e.message); }
+    finally { setSigningOutId(null); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
@@ -2504,6 +2517,11 @@ function AdminPartnersView() {
             {p.onboarding_stage === "Onboarded" && (
               <GhostButton onClick={() => resendWelcome(p)} disabled={resendingId === p.id}>
                 {resendingId === p.id ? "Sending…" : "Resend welcome email"}
+              </GhostButton>
+            )}
+            {p.portal_login_status === "Provisioned" && (
+              <GhostButton onClick={() => forceSignOut(p)} disabled={signingOutId === p.id} style={{ borderColor: BRAND.coral, color: BRAND.coralDark }}>
+                {signingOutId === p.id ? "Signing out…" : "Force sign-out"}
               </GhostButton>
             )}
             {/* 3 Nov 2026 fix — reset-password path: the status gate used to hide
@@ -2744,6 +2762,9 @@ function AdminStartupsView() {
   const [showNew, setShowNew] = useState(false);
   // 23 Nov 2026 CS batch — parity with AdminPartnersView's resend control.
   const [resendingId, setResendingId] = useState(null);
+  // 24 Nov 2026 CS batch — session-security Phase 2's manual "Force
+  // sign-out" button.
+  const [signingOutId, setSigningOutId] = useState(null);
   // 24 Nov 2026 CS batch — soft-archive, same pattern as
   // AdminIntroductionsView/AdminPartnersView. "View Archived" here also
   // surfaces Status='Inactive' startups (confirmed decision) — the backend
@@ -2850,6 +2871,15 @@ function AdminStartupsView() {
     try { await api.unarchiveStartup(s.id); setLastArchiveAction({ type: "Unarchived", label: s.startup_name }); load(); }
     catch (e) { setError(e.message); }
   }
+  // 24 Nov 2026 CS batch — session-security Phase 2, same as
+  // AdminPartnersView.forceSignOut() above.
+  async function forceSignOut(s) {
+    if (!window.confirm(`Force sign-out ${s.startup_name}? They'll be signed out of RISE immediately on any device, and will need to log in again.`)) return;
+    setSigningOutId(s.id); setWarning("");
+    try { await api.forceStartupSignOut(s.id); showSuccess(`${s.startup_name} has been signed out.`); }
+    catch (e) { setWarning(e.message); }
+    finally { setSigningOutId(null); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
@@ -2906,6 +2936,11 @@ function AdminStartupsView() {
             {s.onboarding_stage === "Onboarded" && (
               <GhostButton onClick={() => resendWelcome(s)} disabled={resendingId === s.id}>
                 {resendingId === s.id ? "Sending…" : "Resend welcome email"}
+              </GhostButton>
+            )}
+            {s.portal_login_status === "Provisioned" && (
+              <GhostButton onClick={() => forceSignOut(s)} disabled={signingOutId === s.id} style={{ borderColor: BRAND.coral, color: BRAND.coralDark }}>
+                {signingOutId === s.id ? "Signing out…" : "Force sign-out"}
               </GhostButton>
             )}
             {/* 3 Nov 2026 fix — same reset-password gate removed as on the

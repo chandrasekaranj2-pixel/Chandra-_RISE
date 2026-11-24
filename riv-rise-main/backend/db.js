@@ -506,6 +506,25 @@ async function initSchema() {
     -- at all) — see routes/auth.js's request-code/verify-code.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
 
+    -- 24 Nov 2026 CS batch — session-security Phase 2. Login moves from a
+    -- fully stateless JWT (trusted for 7 days no matter what) to a real
+    -- session row per login, so RIV admin can actually end one early: idle
+    -- timeout, a concurrent-device cap, and "force sign-out" all read/write
+    -- this table. revoked_at is set either by the user's own device cap
+    -- being hit, by idle timeout, or by an admin action — requireAuth in
+    -- middleware/auth.js treats any of those identically (session is dead).
+    CREATE TABLE IF NOT EXISTS sessions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      jti TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_jti ON sessions(jti);
+
     -- 7 Nov 2026 leader feedback — "Intro Only" vs "Intro + Closure Support"
     -- flag, set by the GTM partner on Check Introduction Interest. See
     -- SUPPORT_TYPES above. Defaults to 'Intro Only' so every pre-existing
