@@ -2344,9 +2344,18 @@ function AdminPartnersView() {
   const [provisionBusy, setProvisionBusy] = useState(false);
   const [editingPartner, setEditingPartner] = useState(null);
   const [resendingId, setResendingId] = useState(null);
+  // 24 Nov 2026 CS batch — soft-archive, same pattern as
+  // AdminIntroductionsView's showArchived/lastArchiveAction.
+  const [showArchived, setShowArchived] = useState(false);
+  const [lastArchiveAction, setLastArchiveAction] = useState(null);
 
-  const load = useCallback(() => api.listPartners().then((r) => setPartners(r.partners)).catch((e) => setError(e.message)), []);
+  const load = useCallback(() => api.listPartners(showArchived).then((r) => setPartners(r.partners)).catch((e) => setError(e.message)), [showArchived]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!lastArchiveAction) return;
+    const t = setTimeout(() => setLastArchiveAction(null), 4000);
+    return () => clearTimeout(t);
+  }, [lastArchiveAction]);
 
   // Nov 2026 feedback — mandatory: Full Name, Email, Phone, City, Country,
   // partner type(s), past retail organizations, retail expertise. Optional:
@@ -2411,6 +2420,19 @@ function AdminPartnersView() {
     } catch (e) { setWarning(e.message); }
     finally { setResendingId(null); }
   }
+  // 24 Nov 2026 CS batch — same confirm-then-archive pattern as
+  // AdminIntroductionsView's archive()/unarchive().
+  async function archive(p) {
+    if (!window.confirm(`Archive "${p.full_name}"? You can bring it back anytime from "View Archived".`)) return;
+    setError("");
+    try { await api.archivePartner(p.id); setLastArchiveAction({ type: "Archived", label: p.full_name }); load(); }
+    catch (e) { setError(e.message); }
+  }
+  async function unarchive(p) {
+    setError("");
+    try { await api.unarchivePartner(p.id); setLastArchiveAction({ type: "Unarchived", label: p.full_name }); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
@@ -2423,11 +2445,24 @@ function AdminPartnersView() {
           <button type="button" onClick={() => setWarning("")} style={{ border: "none", background: "transparent", cursor: "pointer" }}><X size={14} /></button>
         </div>
       )}
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <GhostButton onClick={() => setShowArchived((v) => !v)}>
+          {showArchived ? "View Active" : "View Archived"}
+        </GhostButton>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New GTM Partner</PrimaryButton>
       </div>
+      {showArchived && (
+        <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 10 }}>
+          Showing archived GTM partners. Archiving doesn't delete anything or change a partner's status — unarchive to bring them back into the active list.
+        </div>
+      )}
+      {lastArchiveAction && (
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+          {lastArchiveAction.type} — {lastArchiveAction.label}
+        </div>
+      )}
       {!partners ? <Spinner /> : !partners.length ? (
-        <EmptyState icon={Users} title="No GTM partners yet" text="Add a GTM partner to get started." />
+        <EmptyState icon={Users} title={showArchived ? "Nothing archived" : "No GTM partners yet"} text={showArchived ? "Partners you archive will show up here." : "Add a GTM partner to get started."} />
       ) : partners.map((p) => (
         <Card key={p.id} style={{ padding: 16, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <div>
@@ -2452,6 +2487,9 @@ function AdminPartnersView() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
             <GhostButton onClick={() => setEditingPartner(p)}>Edit</GhostButton>
+            {p.archived_at
+              ? <GhostButton onClick={() => unarchive(p)}>Unarchive</GhostButton>
+              : <GhostButton onClick={() => archive(p)} style={{ borderColor: BRAND.coral, color: BRAND.coralDark }}>Archive</GhostButton>}
             {p.onboarding_stage === "Onboarded" && (
               <GhostButton onClick={() => resendWelcome(p)} disabled={resendingId === p.id}>
                 {resendingId === p.id ? "Sending…" : "Resend welcome email"}
@@ -2695,6 +2733,13 @@ function AdminStartupsView() {
   const [showNew, setShowNew] = useState(false);
   // 23 Nov 2026 CS batch — parity with AdminPartnersView's resend control.
   const [resendingId, setResendingId] = useState(null);
+  // 24 Nov 2026 CS batch — soft-archive, same pattern as
+  // AdminIntroductionsView/AdminPartnersView. "View Archived" here also
+  // surfaces Status='Inactive' startups (confirmed decision) — the backend
+  // merges both into the same ?archived=true clause, so this list no
+  // longer needs its own client-side Inactive filter below.
+  const [showArchived, setShowArchived] = useState(false);
+  const [lastArchiveAction, setLastArchiveAction] = useState(null);
   const blankForm = {
     startupName: "", founderName: "", email: "", sector: "", solutionSummary: "",
     problemDescription: "", solutionDescription: "", topBenefits: "", techStack: "", subVertical: "",
@@ -2715,12 +2760,18 @@ function AdminStartupsView() {
 
   // 15 Oct 2026 — an "Inactive" startup (deactivated via a demo-data
   // cleanup, e.g. before re-seeding a fresh account under the same name)
-  // is filtered out of this list entirely rather than shown with a status
-  // badge: admin shouldn't have to tell it apart from the live roster
-  // during a call. The row itself isn't deleted, so it's still there in
-  // the database if it ever needs to be reactivated.
-  const load = useCallback(() => api.listStartups().then((r) => setStartups(r.startups.filter((s) => s.status !== "Inactive"))).catch((e) => setError(e.message)), []);
+  // used to be filtered out of this list entirely with no way back. As of
+  // 24 Nov 2026, GET /admin/startups itself handles that split (default
+  // excludes Inactive + archived; ?archived=true shows both), so this
+  // view no longer filters client-side — "View Archived" is where an
+  // Inactive startup is visible again.
+  const load = useCallback(() => api.listStartups(showArchived).then((r) => setStartups(r.startups)).catch((e) => setError(e.message)), [showArchived]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!lastArchiveAction) return;
+    const t = setTimeout(() => setLastArchiveAction(null), 4000);
+    return () => clearTimeout(t);
+  }, [lastArchiveAction]);
 
   async function createStartup() {
     setError("");
@@ -2775,6 +2826,19 @@ function AdminStartupsView() {
     catch (e) { setError(e.message); }
     finally { setProvisionBusy(false); }
   }
+  // 24 Nov 2026 CS batch — same confirm-then-archive pattern as
+  // AdminIntroductionsView/AdminPartnersView.
+  async function archive(s) {
+    if (!window.confirm(`Archive "${s.startup_name}"? You can bring it back anytime from "View Archived".`)) return;
+    setError("");
+    try { await api.archiveStartup(s.id); setLastArchiveAction({ type: "Archived", label: s.startup_name }); load(); }
+    catch (e) { setError(e.message); }
+  }
+  async function unarchive(s) {
+    setError("");
+    try { await api.unarchiveStartup(s.id); setLastArchiveAction({ type: "Unarchived", label: s.startup_name }); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   return (
@@ -2787,18 +2851,31 @@ function AdminStartupsView() {
           <button type="button" onClick={() => setWarning("")} style={{ border: "none", background: "transparent", cursor: "pointer" }}><X size={14} /></button>
         </div>
       )}
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <GhostButton onClick={() => setShowArchived((v) => !v)}>
+          {showArchived ? "View Active" : "View Archived"}
+        </GhostButton>
         <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New startup</PrimaryButton>
       </div>
+      {showArchived && (
+        <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 10 }}>
+          Showing archived and Inactive startups. Archiving doesn't delete anything or change a startup's status — unarchive to bring it back into the active list.
+        </div>
+      )}
+      {lastArchiveAction && (
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+          {lastArchiveAction.type} — {lastArchiveAction.label}
+        </div>
+      )}
       {!startups ? <Spinner /> : !startups.length ? (
-        <EmptyState icon={Briefcase} title="No RISE startups yet" text="Add a startup to get started." />
+        <EmptyState icon={Briefcase} title={showArchived ? "Nothing archived" : "No RISE startups yet"} text={showArchived ? "Startups you archive (or mark Inactive) will show up here." : "Add a startup to get started."} />
       ) : startups.map((s) => (
         <Card key={s.id} style={{ padding: 16, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{s.startup_name}</div>
             <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>{s.email} · {s.sector || "—"}</div>
             <div style={{ fontFamily: FONT, fontSize: 11, color: "#B7B2AE", marginTop: 5 }}>
-              Stage: {s.onboarding_stage} · Fee: {s.participation_fee_status} · Login: {s.portal_login_status}
+              Status: {s.status} · Stage: {s.onboarding_stage} · Fee: {s.participation_fee_status} · Login: {s.portal_login_status}
               {s.onboarding_stage === "Onboarded" && ` · Welcome email: ${s.welcome_email_sent_at ? "sent" : "not sent"}`}
             </div>
             {/* item 12 (25 Sep 2026 batch) — inline metrics from GET
@@ -2812,6 +2889,9 @@ function AdminStartupsView() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <GhostButton onClick={() => setDetailStartupId(s.id)}>View Details</GhostButton>
             <GhostButton onClick={() => setEditingStartup(s)}>Edit</GhostButton>
+            {s.archived_at
+              ? <GhostButton onClick={() => unarchive(s)}>Unarchive</GhostButton>
+              : <GhostButton onClick={() => archive(s)} style={{ borderColor: BRAND.coral, color: BRAND.coralDark }}>Archive</GhostButton>}
             {s.onboarding_stage === "Onboarded" && (
               <GhostButton onClick={() => resendWelcome(s)} disabled={resendingId === s.id}>
                 {resendingId === s.id ? "Sending…" : "Resend welcome email"}
@@ -2988,6 +3068,12 @@ function AdminRetailersView() {
   const [tab, setTab] = useState("All");
   const [form, setForm] = useState(EMPTY_RETAILER_FORM);
   const [editingRetailer, setEditingRetailer] = useState(null);
+  // 24 Nov 2026 CS batch — soft-archive, same pattern as the other admin
+  // lists. Retailers have no Active/Inactive status field (their `status`
+  // is a workflow stage — Prospect/In Process/Active in network/etc.), so
+  // this one's purely additive, no merged "also show Inactive" wrinkle.
+  const [showArchived, setShowArchived] = useState(false);
+  const [lastArchiveAction, setLastArchiveAction] = useState(null);
   // item 8 — GTM partner is mandatory once Network source is "GTM Partner".
   const gtmPartnerMissing = form.networkSource === "GTM Partner" && !form.owningPartnerId;
   // Nov 2026 feedback — every field mandatory EXCEPT Contact Phone; the
@@ -3001,8 +3087,13 @@ function AdminRetailersView() {
     && filled(form.location) && isCountry(form.hqCountry) && !!form.networkSource && !gtmPartnerMissing
     && filled(form.contactName) && filled(form.contactDesignation) && isEmailValid(form.contactEmail);
 
-  const load = useCallback(() => api.listRetailersAdmin().then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), []);
+  const load = useCallback(() => api.listRetailersAdmin(showArchived).then((r) => setRetailers(r.retailers)).catch((e) => setError(e.message)), [showArchived]);
   useEffect(() => { load(); api.listPartners().then((r) => setPartners(r.partners)).catch(() => {}); }, [load]);
+  useEffect(() => {
+    if (!lastArchiveAction) return;
+    const t = setTimeout(() => setLastArchiveAction(null), 4000);
+    return () => clearTimeout(t);
+  }, [lastArchiveAction]);
 
   async function createRetailer() {
     setError("");
@@ -3029,6 +3120,19 @@ function AdminRetailersView() {
     try { await api.rejectRetailer(id, reason); load(); }
     catch (e) { setError(e.message); }
   }
+  // 24 Nov 2026 CS batch — same confirm-then-archive pattern as the other
+  // admin lists.
+  async function archive(r) {
+    if (!window.confirm(`Archive "${r.brand || r.name}"? You can bring it back anytime from "View Archived".`)) return;
+    setError("");
+    try { await api.archiveRetailer(r.id); setLastArchiveAction({ type: "Archived", label: r.brand || r.name }); load(); }
+    catch (e) { setError(e.message); }
+  }
+  async function unarchive(r) {
+    setError("");
+    try { await api.unarchiveRetailer(r.id); setLastArchiveAction({ type: "Unarchived", label: r.brand || r.name }); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   if (error) return <ErrorBanner text={error} />;
   const visibleRetailers = (retailers || []).filter((r) => tab === "All" || r.network_source === tab);
@@ -3048,10 +3152,25 @@ function AdminRetailersView() {
             </button>
           ))}
         </div>
-        <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New retailer</PrimaryButton>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <GhostButton onClick={() => setShowArchived((v) => !v)}>
+            {showArchived ? "View Active" : "View Archived"}
+          </GhostButton>
+          <PrimaryButton icon={Plus} onClick={() => setShowNew(true)}>New retailer</PrimaryButton>
+        </div>
       </div>
+      {showArchived && (
+        <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 10 }}>
+          Showing archived retailers. Archiving doesn't delete anything or change a retailer's status — unarchive to bring it back into the active list.
+        </div>
+      )}
+      {lastArchiveAction && (
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+          {lastArchiveAction.type} — {lastArchiveAction.label}
+        </div>
+      )}
       {!retailers ? <Spinner /> : !visibleRetailers.length ? (
-        <EmptyState icon={Building2} title="No retailers here" text="Add a retailer to build out the directory." />
+        <EmptyState icon={Building2} title={showArchived ? "Nothing archived" : "No retailers here"} text={showArchived ? "Retailers you archive will show up here." : "Add a retailer to build out the directory."} />
       ) : visibleRetailers.map((r) => (
         <Card key={r.id} style={{ padding: 16, marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
@@ -3063,9 +3182,12 @@ function AdminRetailersView() {
                 <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 6 }}>Rejected: {r.rejection_reason}</div>
               )}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
               <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabelForAdmin(r.status)} />
               <GhostButton onClick={() => setEditingRetailer(r)}>Edit</GhostButton>
+              {r.archived_at
+                ? <GhostButton onClick={() => unarchive(r)}>Unarchive</GhostButton>
+                : <GhostButton onClick={() => archive(r)} style={{ borderColor: BRAND.coral, color: BRAND.coralDark }}>Archive</GhostButton>}
               {["Prospect", "Duplicate"].includes(r.status) && <GhostButton onClick={() => markInProcess(r.id)}>Mark In Process</GhostButton>}
               {r.status !== "Active in network" && r.status !== "Rejected" && <PrimaryButton onClick={() => approve(r.id)}>Approve</PrimaryButton>}
             </div>

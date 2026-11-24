@@ -482,6 +482,21 @@ async function initSchema() {
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
     ALTER TABLE introductions ADD COLUMN IF NOT EXISTS archived_by TEXT;
 
+    -- 24 Nov 2026 CS batch — same soft-archive pattern extended to Startups,
+    -- GTM Partners, and Retailers (admin's own request). Identical
+    -- semantics to introductions' archived_at/archived_by above: NULL =
+    -- active (the default), purely a visibility flag for admin's own list
+    -- — never touches status/onboarding_stage/portal login, and invisible
+    -- to partner/startup portal views. For startups specifically, "View
+    -- Archived" is also where a Status='Inactive' startup becomes visible
+    -- again (confirmed decision) — see GET /admin/startups in admin.js.
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+    ALTER TABLE startups ADD COLUMN IF NOT EXISTS archived_by TEXT;
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS archived_by TEXT;
+    ALTER TABLE retailers ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+    ALTER TABLE retailers ADD COLUMN IF NOT EXISTS archived_by TEXT;
+
     -- 7 Nov 2026 leader feedback — "Intro Only" vs "Intro + Closure Support"
     -- flag, set by the GTM partner on Check Introduction Interest. See
     -- SUPPORT_TYPES above. Defaults to 'Intro Only' so every pre-existing

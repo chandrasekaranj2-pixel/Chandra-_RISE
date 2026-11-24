@@ -176,11 +176,16 @@ export const api = {
 
   // ---- Admin ----
   getSummary: () => request("/admin/summary"),
-  listPartners: () => request("/admin/partners"),
+  // 24 Nov 2026 CS batch — `archived` (same convention as
+  // listIntroductionsAdmin below): omit/false for the normal active list,
+  // true to view the archive instead.
+  listPartners: (archived) => request(`/admin/partners${archived ? "?archived=true" : ""}`),
   createPartner: (payload) => request("/admin/partners", { method: "POST", body: payload }),
   updatePartner: (id, payload) => request(`/admin/partners/${id}`, { method: "PUT", body: payload }),
   provisionPartnerLogin: (id, password) => request(`/admin/partners/${id}/provision-login`, { method: "POST", body: { password } }),
   deletePartner: (id) => request(`/admin/partners/${id}`, { method: "DELETE" }),
+  archivePartner: (id) => request(`/admin/partners/${id}/archive`, { method: "PUT" }),
+  unarchivePartner: (id) => request(`/admin/partners/${id}/unarchive`, { method: "PUT" }),
   // 23 Nov 2026 CS batch — these were called by AdminPartnersView's/
   // AdminStartupsView's "Resend welcome email" buttons but never actually
   // defined here, so the partner button has been throwing a runtime error
@@ -190,15 +195,19 @@ export const api = {
   // missing client-side wrapper.
   resendPartnerWelcome: (id) => request(`/admin/partners/${id}/send-welcome-email`, { method: "POST" }),
   resendStartupWelcome: (id) => request(`/admin/startups/${id}/send-welcome-email`, { method: "POST" }),
-  listStartups: () => request("/admin/startups"),
+  listStartups: (archived) => request(`/admin/startups${archived ? "?archived=true" : ""}`),
   createStartup: (payload) => request("/admin/startups", { method: "POST", body: payload }),
   updateStartup: (id, payload) => request(`/admin/startups/${id}`, { method: "PUT", body: payload }),
   provisionStartupLogin: (id, password) => request(`/admin/startups/${id}/provision-login`, { method: "POST", body: { password } }),
   deleteStartup: (id) => request(`/admin/startups/${id}`, { method: "DELETE" }),
-  listRetailersAdmin: () => request("/admin/retailers"),
+  archiveStartup: (id) => request(`/admin/startups/${id}/archive`, { method: "PUT" }),
+  unarchiveStartup: (id) => request(`/admin/startups/${id}/unarchive`, { method: "PUT" }),
+  listRetailersAdmin: (archived) => request(`/admin/retailers${archived ? "?archived=true" : ""}`),
   createRetailer: (payload) => request("/admin/retailers", { method: "POST", body: payload }),
   updateRetailer: (id, payload) => request(`/admin/retailers/${id}`, { method: "PUT", body: payload }),
   deleteRetailer: (id) => request(`/admin/retailers/${id}`, { method: "DELETE" }),
+  archiveRetailer: (id) => request(`/admin/retailers/${id}/archive`, { method: "PUT" }),
+  unarchiveRetailer: (id) => request(`/admin/retailers/${id}/unarchive`, { method: "PUT" }),
   approveRetailer: (id) => request(`/admin/retailers/${id}/approve`, { method: "PUT" }),
   rejectRetailer: (id, reason) => request(`/admin/retailers/${id}/reject`, { method: "PUT", body: { reason } }),
   markRetailerInProcess: (id) => request(`/admin/retailers/${id}/mark-in-process`, { method: "PUT" }),

@@ -70,8 +70,13 @@ router.get("/summary", async (req, res, next) => {
 // Three correlated subqueries rather than one grouped join, since each
 // aggregates a different table/relationship off partners.id and a single
 // join would multiply rows across retailers/introductions.
+// 24 Nov 2026 CS batch — soft-archive, same ?archived=true convention as
+// GET /admin/introductions: omit/false shows the normal active list,
+// true shows only archived rows. Archiving a partner never touches
+// Status/onboarding/portal login — purely an admin-list visibility flag.
 router.get("/partners", async (req, res, next) => {
   try {
+    const archivedClause = req.query.archived === "true" ? "p.archived_at IS NOT NULL" : "p.archived_at IS NULL";
     const { rows } = await pool.query(`
       SELECT p.*, u.email AS login_email,
         (SELECT COUNT(*)::int FROM retailers r WHERE r.owning_partner_id = p.id) AS retailer_count,
@@ -80,9 +85,36 @@ router.get("/partners", async (req, res, next) => {
              AND i.status NOT IN ('Closed - Won','Closed - Lost','Stalled','Invoiced','Paid','Payout Complete')) AS active_introduction_count,
         (SELECT COALESCE(SUM(i.fee_amount_due), 0) FROM introductions i
            WHERE i.partner_id = p.id AND i.status IN ('Closed - Won','Invoiced','Paid','Payout Complete')) AS fees_earned
-      FROM partners p LEFT JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC
+      FROM partners p LEFT JOIN users u ON u.id = p.user_id WHERE ${archivedClause} ORDER BY p.created_at DESC
     `);
     res.json({ partners: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/partners/:id/archive — PUT .../unarchive — soft archive/
+// restore, identical mechanics to introductions' archive/unarchive below.
+router.put("/partners/:id/archive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE partners SET archived_at = now(), archived_by = $2 WHERE id = $1 RETURNING *",
+      [req.params.id, req.user.name]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
+    res.json({ partner: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+router.put("/partners/:id/unarchive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE partners SET archived_at = NULL, archived_by = NULL WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
+    res.json({ partner: rows[0] });
   } catch (err) {
     next(err);
   }
@@ -272,8 +304,20 @@ router.delete("/partners/:id", async (req, res, next) => {
 // column name — see db.js's `ALTER TABLE introductions ADD COLUMN IF NOT
 // EXISTS opportunity_value NUMERIC`), not deal_value/fee_amount_due,
 // across every introduction tied to the startup regardless of status.
+// 24 Nov 2026 CS batch — soft-archive, same ?archived=true convention as
+// GET /admin/introductions and /admin/partners above, with one extra
+// wrinkle (confirmed decision): a Status='Inactive' startup used to be
+// silently dropped from this list forever with no way to see it again in
+// the UI (the frontend did `.filter(s => s.status !== "Inactive")` with
+// no toggle). "View Archived" now doubles as that missing toggle — it
+// shows BOTH explicitly archived rows and Inactive ones — while the
+// default/active view still excludes both, same as before. Archiving
+// itself still never touches Status/onboarding/portal login.
 router.get("/startups", async (req, res, next) => {
   try {
+    const archivedClause = req.query.archived === "true"
+      ? "(s.archived_at IS NOT NULL OR s.status = 'Inactive')"
+      : "s.archived_at IS NULL AND s.status != 'Inactive'";
     const { rows } = await pool.query(`
       SELECT s.*, u.email AS login_email,
         (SELECT COUNT(*)::int FROM introductions i
@@ -282,9 +326,34 @@ router.get("/startups", async (req, res, next) => {
         (SELECT COUNT(*)::int FROM introductions i
            WHERE i.startup_id = s.id AND i.engagement_stage = 'Closed - Won') AS closed_won_count,
         (SELECT COALESCE(SUM(i.opportunity_value), 0) FROM introductions i WHERE i.startup_id = s.id) AS total_opportunity_value
-      FROM startups s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.created_at DESC
+      FROM startups s LEFT JOIN users u ON u.id = s.user_id WHERE ${archivedClause} ORDER BY s.created_at DESC
     `);
     res.json({ startups: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/startups/:id/archive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE startups SET archived_at = now(), archived_by = $2 WHERE id = $1 RETURNING *",
+      [req.params.id, req.user.name]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Startup not found." });
+    res.json({ startup: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+router.put("/startups/:id/unarchive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE startups SET archived_at = NULL, archived_by = NULL WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Startup not found." });
+    res.json({ startup: rows[0] });
   } catch (err) {
     next(err);
   }
@@ -555,16 +624,45 @@ router.delete("/startups/:id", async (req, res, next) => {
 
 // ---------- Retailers ----------
 
+// 24 Nov 2026 CS batch — soft-archive, same ?archived=true convention as
+// the other admin lists above.
 router.get("/retailers", async (req, res, next) => {
   try {
+    const archivedClause = req.query.archived === "true" ? "r.archived_at IS NOT NULL" : "r.archived_at IS NULL";
     const { rows } = await pool.query(
       `SELECT r.*, p.full_name AS owning_partner_name, dup.name AS duplicate_of_name
        FROM retailers r
        LEFT JOIN partners p ON p.id = r.owning_partner_id
        LEFT JOIN retailers dup ON dup.id = r.duplicate_of_retailer_id
+       WHERE ${archivedClause}
        ORDER BY r.created_at DESC`
     );
     res.json({ retailers: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/retailers/:id/archive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE retailers SET archived_at = now(), archived_by = $2 WHERE id = $1 RETURNING *",
+      [req.params.id, req.user.name]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Retailer not found." });
+    res.json({ retailer: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+router.put("/retailers/:id/unarchive", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      "UPDATE retailers SET archived_at = NULL, archived_by = NULL WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Retailer not found." });
+    res.json({ retailer: rows[0] });
   } catch (err) {
     next(err);
   }
