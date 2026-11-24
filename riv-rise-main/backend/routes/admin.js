@@ -1016,6 +1016,11 @@ router.post("/introductions", async (req, res, next) => {
   try {
     const { startupId, retailerId, context, supportType } = req.body || {};
     if (!startupId || !retailerId) return res.status(400).json({ error: "startupId and retailerId are required." });
+    // 24 Nov 2026 (sheet 24-11, admin) — Introduction context and Support
+    // type are mandatory on New Introduction (enforced here too, not just
+    // by the disabled button).
+    if (!context || !String(context).trim()) return res.status(400).json({ error: "Introduction context is required." });
+    if (!supportType) return res.status(400).json({ error: "Select a support type." });
     // 16 Nov 2026 CEO feedback (defect 4) — same Intro Only / Intro +
     // Closure Support flag the GTM partner's Check Introduction Interest
     // form already has (portal.js's createPartnerInitiatedIntroduction),

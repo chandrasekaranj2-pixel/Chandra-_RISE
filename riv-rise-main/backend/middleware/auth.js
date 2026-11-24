@@ -28,7 +28,22 @@ function signToken(user, jti, sessionLifetimeDays) {
 // That's what lets an admin's "force sign-out" (or marking someone
 // Inactive) actually kill an already-issued token rather than just hoping
 // it expires on its own in a week.
-async function requireAuth(req, res, next) {
+//
+// 24 Nov 2026 (sheet 24-11, admin defect "session did not time out") — the
+// frontend now polls GET /auth/session-status to notice an expired/idle
+// session on an open tab. That poll must NOT count as activity, or an
+// untouched tab would keep itself alive forever — so it goes through
+// checkSession with { touch: false }, which runs every check below but
+// skips the last_seen_at heartbeat. Every real API call still uses
+// requireAuth (touch: true), so genuine use keeps the session alive.
+function requireAuth(req, res, next) {
+  return checkSession(req, res, next, { touch: true });
+}
+function requireAuthNoTouch(req, res, next) {
+  return checkSession(req, res, next, { touch: false });
+}
+
+async function checkSession(req, res, next, { touch }) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: "Not logged in." });
@@ -63,7 +78,7 @@ async function requireAuth(req, res, next) {
 
     // Fire-and-forget — a slow/failed heartbeat update shouldn't block the
     // request it's riding along with.
-    pool.query("UPDATE sessions SET last_seen_at = now() WHERE id = $1", [session.id]).catch(() => {});
+    if (touch) pool.query("UPDATE sessions SET last_seen_at = now() WHERE id = $1", [session.id]).catch(() => {});
 
     req.user = payload;
     req.sessionId = session.id;
@@ -126,4 +141,4 @@ async function forceSignOutUser(userId) {
   await pool.query("UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [userId]);
 }
 
-module.exports = { requireAuth, requireAdmin, requireRole, signToken, createSession, forceSignOutUser };
+module.exports = { requireAuth, requireAuthNoTouch, requireAdmin, requireRole, signToken, createSession, forceSignOutUser };

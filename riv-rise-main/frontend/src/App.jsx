@@ -5,7 +5,7 @@ import {
   Paperclip, Trash2, CheckCircle2,
 } from "lucide-react";
 import {
-  api, getStoredUser, setSession, clearSession,
+  api, getStoredUser, setSession, clearSession, SESSION_EXPIRED_EVENT,
 } from "./api.js";
 import { BRAND } from "./brand.js";
 import { RETAIL_CATEGORIES, COUNTRIES, PARTNER_TYPES } from "./formOptions.js";
@@ -56,8 +56,12 @@ const APPROVAL_COLORS = {
 // "GTM Notified" flag as-is ("Startup Confirmed" is relabeled separately
 // for admin via approvalStatusForAdmin below) — this relabeling is
 // startup-display only, the stored approval_status is untouched.
+// 24 Nov 2026 (sheet 24-11, startup "Proof — not under RIV approval") —
+// "Proof Recorded" / "Introduced" are about the introduction having
+// happened, which the startup already sees in the Introduction Status
+// column. In the RIV Approval Status column they read as RIV Approved.
 function approvalStatusForStartup(approvalStatus) {
-  return approvalStatus === "GTM Notified" || approvalStatus === "Startup Confirmed" ? "RIV Approved" : approvalStatus;
+  return ["GTM Notified", "Startup Confirmed", "Proof Recorded", "Introduced"].includes(approvalStatus) ? "RIV Approved" : approvalStatus;
 }
 // 15 Oct 2026 — admin's "Detail:" badge relabels two internal-plumbing
 // values to clearer, RIV-centric text: "Startup Confirmed" shows as
@@ -462,10 +466,13 @@ function GoogleSignInButton({ onCredential, onError }) {
   return <div ref={holderRef} style={{ display: "flex", justifyContent: "center", minHeight: 44 }} />;
 }
 
-function LoginView({ onAuthed }) {
+function LoginView({ onAuthed, notice }) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
-  const [error, setError] = useState("");
+  // 24 Nov 2026 (sheet 24-11) — `notice` carries the server's sign-out
+  // reason (idle timeout etc.) when the app was sent back here
+  // automatically, so the person knows why they're seeing the login page.
+  const [error, setError] = useState(notice || "");
   const [loading, setLoading] = useState(false);
   // "code-request" | "code-sent" — passwordless email sign-in (CEO request,
   // Nov 2026). Google sign-in (below) is a second, independent way in,
@@ -774,7 +781,11 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
     ["Actual Introduction status", introducedStatusFor(intro.status, intro.engagement_stage)],
     ["Deal Status", intro.engagement_stage || "—"],
     ["Opportunity Value", opportunityMoney(intro.opportunity_value)],
-    ["Startup Commit Status", intro.startup_commit_status || "Not yet responded"],
+    // 24 Nov 2026 (sheet 24-11, startup "Remove this in this tab") —
+    // Commit Status is the startup's answer to a pairing someone else
+    // proposed; on the startup's own request (Retailer Introductions
+    // Requested) it has no meaning, so it's not shown there.
+    ...(intro.initiated_by === "Startup" ? [] : [["Startup Commit Status", intro.startup_commit_status || "Not yet responded"]]),
     ["Last Updated", `${dateStr(intro.updated_at)}${intro.updated_by ? ` · ${intro.updated_by}` : ""}`],
   ];
   const requestRows = [
@@ -815,6 +826,10 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
   // admin route instead — a RIV-direct intro can be at 'Proof Recorded'
   // too, so check the RIV-direct attachment first.
   const hasRivProof = isAdmin && !!intro.riv_proof_attachment;
+  // 24 Nov 2026 (sheet 24-11, startup "View proof not working") — non-admin
+  // "View proof" now opens RIV-logged proof too (portal.js falls back to
+  // riv_proof_attachment), and the button only shows when a file exists.
+  const hasAnyProofFile = !!intro.proof_attachment || !!intro.riv_proof_attachment || !!intro.has_riv_proof_attachment;
   const showProofSubmittedLine = isAdmin && (intro.approval_status === "Proof Recorded" || hasRivProof) && intro.channel;
 
   return (
@@ -899,13 +914,13 @@ function IntroDetailModal({ intro, onClose, isAdmin = false, user, onRefresh }) 
               </button>
             </>
           )}
-          {proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 4 }}>{proofFileError}</div>}
+          {isAdmin && proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 4 }}>{proofFileError}</div>}
         </div>
       )}
       {/* Non-admin: once proof is recorded, the same file is openable via
           the owner-scoped route (item 6 — "View proof", no admin auth
           needed). */}
-      {!isAdmin && intro.approval_status === "Proof Recorded" && (
+      {!isAdmin && intro.approval_status === "Proof Recorded" && hasAnyProofFile && (
         <div style={{ marginTop: 14 }}>
           <GhostButton onClick={openProofFile}>View proof</GhostButton>
           {proofFileError && <div style={{ fontFamily: FONT, fontSize: 11.5, color: BRAND.coralDark, marginTop: 6 }}>{proofFileError}</div>}
@@ -1106,7 +1121,8 @@ function PartnerStartupsView({ onViewDetails }) {
             <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", marginTop: 6, maxWidth: 480 }}>{s.solution_summary}</div>
             {(s.gtm_share_intro_pct != null || s.gtm_share_commercialization_pct != null) && (
               <div style={{ fontFamily: FONT, fontSize: 12, color: BRAND.gold || "#9B7B2E", marginTop: 6 }}>
-                Your success fee — Intro: {s.gtm_share_intro_pct != null ? `${s.gtm_share_intro_pct}%` : "—"} · Intro + Closure Support: {s.gtm_share_commercialization_pct != null ? `${s.gtm_share_commercialization_pct}%` : "—"}
+                {/* 24 Nov 2026 (sheet 24-11): "Your" → "GTM Partner" across the board. */}
+                GTM Partner Success Fee — Intro: {s.gtm_share_intro_pct != null ? `${s.gtm_share_intro_pct}%` : "—"} · Intro + Closure Support: {s.gtm_share_commercialization_pct != null ? `${s.gtm_share_commercialization_pct}%` : "—"}
               </div>
             )}
           </div>
@@ -1195,8 +1211,10 @@ function StartupDetailModal({ startupId, onClose }) {
     // than needing an explicit role check here.
     ["Introduction fee (startup pays RIV)", startup.intro_fee_pct != null ? `${startup.intro_fee_pct}%` : null],
     ["Active Commercialization Support fee (startup pays RIV)", startup.active_commercialization_fee_pct != null ? `${startup.active_commercialization_fee_pct}%` : null],
-    ["Your success fee - Intro Only deals", startup.gtm_share_intro_pct != null ? `${startup.gtm_share_intro_pct}%` : null],
-    ["Your success fee - Intro + Closure Support deals", startup.gtm_share_commercialization_pct != null ? `${startup.gtm_share_commercialization_pct}%` : null],
+    // 24 Nov 2026 (sheet 24-11, GTM Partner): "Your success fee" →
+    // "GTM Partner Success Fee" across the board.
+    ["GTM Partner Success Fee - Intro Only deals", startup.gtm_share_intro_pct != null ? `${startup.gtm_share_intro_pct}%` : null],
+    ["GTM Partner Success Fee - Intro + Closure Support deals", startup.gtm_share_commercialization_pct != null ? `${startup.gtm_share_commercialization_pct}%` : null],
   ] : [];
 
   return (
@@ -1316,6 +1334,10 @@ function RequestIntroductionModal({ retailer, onClose, onCreated }) {
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
+  const requestFormComplete = consent
+    && [form.whyInterested, form.problemSolved, form.relevantOffering, form.buyerPersona].every((v) => v.trim())
+    && (!form.previouslyEngaged || form.priorEngagementDetails.trim());
+
   async function submit() {
     setError(""); setBusy(true);
     try {
@@ -1356,10 +1378,13 @@ function RequestIntroductionModal({ retailer, onClose, onCreated }) {
       <Field label="Problem solved for enterprise" required>
         <textarea style={{ ...inputStyle, minHeight: 60 }} value={form.problemSolved} onChange={(e) => setForm({ ...form, problemSolved: e.target.value })} />
       </Field>
-      <Field label="Relevant product/offering">
+      {/* 24 Nov 2026 (sheet 24-11, startup "Request intro — fields have to
+          be marked mandatory and to be mandatory"): these two are now
+          required too (backend enforces the same list in portal.js). */}
+      <Field label="Relevant product/offering" required>
         <input style={inputStyle} value={form.relevantOffering} onChange={(e) => setForm({ ...form, relevantOffering: e.target.value })} />
       </Field>
-      <Field label="Desired buyer persona">
+      <Field label="Desired buyer persona" required>
         <input style={inputStyle} value={form.buyerPersona} onChange={(e) => setForm({ ...form, buyerPersona: e.target.value })} />
       </Field>
       <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, cursor: "pointer" }}>
@@ -1367,7 +1392,7 @@ function RequestIntroductionModal({ retailer, onClose, onCreated }) {
         <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>Previously engaged with this enterprise</span>
       </label>
       {form.previouslyEngaged && (
-        <Field label="Prior engagement details">
+        <Field label="Prior engagement details" required>
           <textarea style={{ ...inputStyle, minHeight: 50 }} value={form.priorEngagementDetails} onChange={(e) => setForm({ ...form, priorEngagementDetails: e.target.value })} />
         </Field>
       )}
@@ -1383,7 +1408,7 @@ function RequestIntroductionModal({ retailer, onClose, onCreated }) {
           <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, lineHeight: 1.6 }}>I have read and agree to the Terms &amp; Conditions.</span>
         </label>
       </div>
-      <PrimaryButton disabled={busy || !consent || !form.whyInterested || !form.problemSolved} onClick={submit} style={{ width: "100%" }}>Submit request</PrimaryButton>
+      <PrimaryButton disabled={busy || !requestFormComplete} onClick={submit} style={{ width: "100%" }}>Submit request</PrimaryButton>
     </Modal>
   );
 }
@@ -1398,6 +1423,11 @@ function RequestIntroductionModal({ retailer, onClose, onCreated }) {
 function RetailerDirectoryView({ user, onRequest }) {
   const [retailers, setRetailers] = useState(null);
   const [error, setError] = useState("");
+  // 24 Nov 2026 (sheet 24-11, startup "Retailers page — should be able to
+  // see more details of the Retailer, not the contact details"). Startup
+  // only; the API already never sends contact fields to partner/startup
+  // (RETAILER_PUBLIC_COLUMNS in portal.js).
+  const [detailRetailer, setDetailRetailer] = useState(null);
   // item 1 (25 Sep 2026 batch): "My Retail Network" is a pure retailer
   // directory now, scoped to only what this partner owns/submitted — no
   // per-retailer introduction rows any more (that activity now lives in
@@ -1424,6 +1454,7 @@ function RetailerDirectoryView({ user, onRequest }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
               {user.role === "partner" && <StatusBadge status={r.status} colors={RETAILER_STATUS_COLORS} label={retailerStatusLabelForPartner(r.status)} />}
+              {user.role === "startup" && <GhostButton onClick={() => setDetailRetailer(r)}>View details</GhostButton>}
               {user.role === "startup" && <PrimaryButton icon={Send} onClick={() => onRequest(r)}>Request intro</PrimaryButton>}
             </div>
           </div>
@@ -1439,12 +1470,61 @@ function RetailerDirectoryView({ user, onRequest }) {
           )}
         </Card>
       ))}
+      {detailRetailer && (
+        <RetailerDetailModal
+          retailer={detailRetailer}
+          onClose={() => setDetailRetailer(null)}
+          onRequest={() => { const r = detailRetailer; setDetailRetailer(null); onRequest(r); }}
+        />
+      )}
     </div>
+  );
+}
+
+// Read-only retailer profile for a startup (24 Nov 2026, sheet 24-11).
+// Everything RIV holds on the retailer EXCEPT contact name/designation/
+// email/phone — those never reach a startup (PRD §7/§9).
+function RetailerDetailModal({ retailer: r, onClose, onRequest }) {
+  const website = r.website && (/^https?:\/\//i.test(r.website) ? r.website : `https://${r.website}`);
+  const rows = [
+    ["Retailer name", r.name],
+    ["Brand", r.brand],
+    ["Website", website ? <a href={website} target="_blank" rel="noopener noreferrer" style={{ color: BRAND.coral }}>{r.website}</a> : null],
+    ["Category / retail segment", r.category],
+    ["City", r.location],
+    ["HQ country", r.hq_country],
+    ["Network", r.network_source === "GTM Partner" ? "GTM Partner network" : "RIV Direct"],
+  ].filter(([, v]) => v);
+  return (
+    <Modal title={r.brand || r.name} onClose={onClose} width={520}>
+      {rows.map(([label, value]) => (
+        <div key={label} style={{ marginBottom: 14 }}>
+          <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11.5, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>{label}</div>
+          <div style={{ fontFamily: FONT, fontSize: 13, color: BRAND.ink, lineHeight: 1.6 }}>{value}</div>
+        </div>
+      ))}
+      <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", lineHeight: 1.6, margin: "4px 0 16px" }}>
+        Retailer contact details aren't shown here — RIV handles the introduction.
+      </div>
+      <PrimaryButton icon={Send} onClick={onRequest} style={{ width: "100%" }}>Request intro</PrimaryButton>
+    </Modal>
   );
 }
 
 // Add Retailer (addendum §1) — fields mirror the RISE Introduction
 // Submission Form (Bigin) in full for the retailer/enterprise side.
+//
+// 24 Nov 2026 (sheet 24-11, GTM Partner login): brought in line with
+// admin's own "New retailer" form —
+//   - same example placeholders / hints ("e.g., Reliance", "Banner / brand
+//     name", …) that were missing here;
+//   - same pickers: Category is the fixed RETAIL_CATEGORIES list and HQ
+//     country the searchable COUNTRIES list, instead of free text;
+//   - same validation: valid website URL, valid email, category/country
+//     from the list, every field required except phone (backend enforces
+//     the same rules in portal.js's POST /retailers);
+//   - "Optional." removed from under the phone field.
+// Field labels stay the GTM-partner wording from the Bigin form.
 function AddRetailerModal({ onClose, onCreated }) {
   const [form, setForm] = useState({
     name: "", brand: "", website: "", location: "", hqCountry: "", category: "",
@@ -1460,9 +1540,14 @@ function AddRetailerModal({ onClose, onCreated }) {
     finally { setBusy(false); }
   }
 
-  // item 9 (9 Oct 2026 batch) — every field required except phone.
-  const requiredFilled = form.name && form.brand && form.website && form.location
-    && form.hqCountry && form.category && form.contactName && form.contactDesignation && form.contactEmail;
+  const fieldErrors = {
+    website: filled(form.website) && !isUrlValid(form.website) ? "Enter a valid URL, e.g. https://www.reliancetrends.com" : "",
+    hqCountry: filled(form.hqCountry) && !isCountry(form.hqCountry) ? "Pick a country from the list." : "",
+    contactEmail: filled(form.contactEmail) && !isEmailValid(form.contactEmail) ? "Enter a valid email address." : "",
+  };
+  const formValid = filled(form.name) && filled(form.brand) && isUrlValid(form.website)
+    && filled(form.location) && isCountry(form.hqCountry) && RETAIL_CATEGORIES.includes(form.category)
+    && filled(form.contactName) && filled(form.contactDesignation) && isEmailValid(form.contactEmail);
 
   return (
     <Modal title="Add Retailer to RIV network" onClose={onClose} width={520}>
@@ -1470,17 +1555,37 @@ function AddRetailerModal({ onClose, onCreated }) {
       <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 14, lineHeight: 1.6 }}>
         Submissions are reviewed by RIV before appearing in the approved directory.
       </div>
-      <Field label="Retail enterprise you are referring" required><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-      <Field label="Brand you are introducing to" required><input style={inputStyle} value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} /></Field>
-      <Field label="Website" required><input style={inputStyle} value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} /></Field>
-      <Field label="City where enterprise is headquartered" required><input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
-      <Field label="HQ country" required><input style={inputStyle} value={form.hqCountry} onChange={(e) => setForm({ ...form, hqCountry: e.target.value })} /></Field>
-      <Field label="Retail segment" required><input style={inputStyle} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
-      <Field label="Enterprise contact — full name" required><input style={inputStyle} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></Field>
-      <Field label="Enterprise contact — designation" required><input style={inputStyle} value={form.contactDesignation} onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} /></Field>
-      <Field label="Enterprise contact — email" required><input style={inputStyle} type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></Field>
-      <Field label="Enterprise contact — phone" hint="Optional."><input style={inputStyle} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
-      <PrimaryButton onClick={submit} disabled={busy || !requiredFilled} style={{ width: "100%" }}>Submit for review</PrimaryButton>
+      <Field label="Retail enterprise you are referring" required hint="Enterprise / parent retailer name">
+        <input style={inputStyle} value={form.name} placeholder="e.g., Reliance" onChange={(e) => setForm({ ...form, name: e.target.value })} />
+      </Field>
+      <Field label="Brand you are introducing to" required hint="Banner / brand name">
+        <input style={inputStyle} value={form.brand} placeholder="e.g., Reliance Trends" onChange={(e) => setForm({ ...form, brand: e.target.value })} />
+      </Field>
+      <Field label="Website" required error={fieldErrors.website}>
+        <input style={inputStyle} value={form.website} placeholder="e.g., https://www.reliancetrends.com" onChange={(e) => setForm({ ...form, website: e.target.value })} />
+      </Field>
+      <Field label="City where enterprise is headquartered" required>
+        <input style={inputStyle} value={form.location} placeholder="e.g., Mumbai" onChange={(e) => setForm({ ...form, location: e.target.value })} />
+      </Field>
+      <Field label="HQ country" required error={fieldErrors.hqCountry}>
+        <CountrySelect value={form.hqCountry} placeholder="e.g., India — start typing to search" onChange={(v) => setForm({ ...form, hqCountry: v })} />
+      </Field>
+      <Field label="Retail segment" required>
+        <CategorySelect value={form.category} onChange={(v) => setForm({ ...form, category: v })} />
+      </Field>
+      <Field label="Enterprise contact — full name" required>
+        <input style={inputStyle} value={form.contactName} placeholder="e.g., John Smith" onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
+      </Field>
+      <Field label="Enterprise contact — designation" required>
+        <input style={inputStyle} value={form.contactDesignation} placeholder="e.g., CIO" onChange={(e) => setForm({ ...form, contactDesignation: e.target.value })} />
+      </Field>
+      <Field label="Enterprise contact — email" required error={fieldErrors.contactEmail}>
+        <input style={inputStyle} type="email" value={form.contactEmail} placeholder="e.g., name@company.com" onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} />
+      </Field>
+      <Field label="Enterprise contact — phone">
+        <input style={inputStyle} value={form.contactPhone} placeholder="e.g., +91 98XXXXXXXX" onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} />
+      </Field>
+      <PrimaryButton onClick={submit} disabled={busy || !formValid} style={{ width: "100%" }}>Submit for review</PrimaryButton>
     </Modal>
   );
 }
@@ -1522,24 +1627,6 @@ function filterIntros(intros, search, statusFilter) {
   });
 }
 
-// Deal Status select — editable only once Introduction Status is
-// "Introduced" (PRD Tab 1 item 8 / Tab 2 item 10); a plain read-only badge
-// otherwise. Shared by both tabs since the rule is identical.
-function DealStatusCell({ intro, onSave }) {
-  const editable = intro.status === "Introduced";
-  if (!editable) {
-    return intro.engagement_stage
-      ? <StatusBadge status={intro.engagement_stage} colors={DEAL_STATUS_COLORS} />
-      : <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#B7B2AE" }}>—</span>;
-  }
-  return (
-    <select style={{ ...inputStyle, minWidth: 150 }} value={intro.engagement_stage || ""} onChange={(e) => onSave({ dealStatus: e.target.value })}>
-      <option value="">—</option>
-      {DEAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-    </select>
-  );
-}
-
 // 9 Oct 2026 batch, item 7 — Opportunity Value display with a $ prefix
 // (it's a USD figure, unlike every other amount in the app which is ₹ via
 // money()). No currency conversion here, just the symbol — the stored
@@ -1548,24 +1635,79 @@ function opportunityMoney(n) {
   if (n === null || n === undefined || n === "") return "—";
   return `$${Number(n).toLocaleString("en-US")}`;
 }
-// Opportunity Value input — editable only once Introduction Status is
-// "Introduced" AND Deal Status isn't yet "Closed - Won" (PRD Tab 1 items
-// 9–10 / Tab 2 items 11–12); read-only display in every other case.
-function OpportunityValueCell({ intro, onSave }) {
-  const editable = intro.status === "Introduced" && intro.engagement_stage !== "Closed - Won";
-  if (!editable) {
-    return <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{opportunityMoney(intro.opportunity_value)}</span>;
+
+// Deal Status + Opportunity Value editing, shared by both startup tabs.
+//
+// 24 Nov 2026 (sheet 24-11, startup "Once I edit the stage or the
+// opportunity value, there is no save button"). Deal Status used to save
+// the instant the dropdown changed and Opportunity Value saved silently on
+// blur, so there was no visible way to save (or to know it had saved).
+// Both are now held as a pending draft per row; a Save / Cancel pair
+// appears in the row's last column as soon as either differs from what's
+// stored, and nothing is written until Save is clicked — same pattern as
+// CommitStatusCell below.
+//
+// Editability rules are unchanged: Deal Status only once Introduction
+// Status is "Introduced" (PRD Tab 1 item 8 / Tab 2 item 10); Opportunity
+// Value only once "Introduced" AND Deal Status isn't yet "Closed - Won"
+// (PRD Tab 1 items 9–10 / Tab 2 items 11–12).
+function DealEditableRow({ intro, leadingCells, onSave, onViewDetails }) {
+  const savedStage = intro.engagement_stage || "";
+  const savedValue = intro.opportunity_value == null ? "" : String(Number(intro.opportunity_value));
+  const [stage, setStage] = useState(savedStage);
+  const [value, setValue] = useState(savedValue);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setStage(savedStage); }, [savedStage]);
+  useEffect(() => { setValue(savedValue); }, [savedValue]);
+
+  const stageEditable = intro.status === "Introduced";
+  const valueEditable = intro.status === "Introduced" && savedStage !== "Closed - Won";
+  const stageDirty = stageEditable && stage !== savedStage && stage !== "";
+  const valueDirty = valueEditable && value.trim() !== savedValue && value.trim() !== "";
+  const dirty = stageDirty || valueDirty;
+
+  async function save() {
+    const patch = {};
+    if (stageDirty) patch.dealStatus = stage;
+    if (valueDirty) patch.opportunityValue = value.trim();
+    setBusy(true);
+    try { await onSave(patch); } finally { setBusy(false); }
   }
+  function cancel() { setStage(savedStage); setValue(savedValue); }
+
   return (
-    <div style={{ position: "relative", minWidth: 130 }}>
-      <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontFamily: FONT, fontSize: 13.5, color: "#9B958F", pointerEvents: "none" }}>$</span>
-      <input
-        style={{ ...inputStyle, paddingLeft: 22 }}
-        type="number"
-        defaultValue={intro.opportunity_value || ""}
-        onBlur={(e) => e.target.value !== String(intro.opportunity_value || "") && onSave({ opportunityValue: e.target.value || null })}
-      />
-    </div>
+    <tr>
+      {leadingCells}
+      <td style={cellStyle}>
+        {stageEditable ? (
+          <select style={{ ...inputStyle, minWidth: 150 }} value={stage} disabled={busy} onChange={(e) => setStage(e.target.value)}>
+            <option value="">—</option>
+            {DEAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : savedStage
+          ? <StatusBadge status={savedStage} colors={DEAL_STATUS_COLORS} />
+          : <span style={{ fontFamily: FONT, fontSize: 12.5, color: "#B7B2AE" }}>—</span>}
+      </td>
+      <td style={cellStyle}>
+        {valueEditable ? (
+          <div style={{ position: "relative", minWidth: 130 }}>
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontFamily: FONT, fontSize: 13.5, color: "#9B958F", pointerEvents: "none" }}>$</span>
+            <input style={{ ...inputStyle, paddingLeft: 22 }} type="number" min="0" value={value} disabled={busy} onChange={(e) => setValue(e.target.value)} />
+          </div>
+        ) : <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink }}>{opportunityMoney(intro.opportunity_value)}</span>}
+      </td>
+      <td style={cellStyle}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end" }}>
+          {dirty && (
+            <>
+              <PrimaryButton icon={CheckCircle2} disabled={busy} onClick={save} style={{ padding: "6px 10px", fontSize: 12 }}>{busy ? "Saving…" : "Save"}</PrimaryButton>
+              <GhostButton disabled={busy} onClick={cancel} style={{ padding: "6px 10px", fontSize: 12 }}>Cancel</GhostButton>
+            </>
+          )}
+          <GhostButton onClick={onViewDetails} style={{ padding: "6px 12px" }}>View Details</GhostButton>
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -1659,12 +1801,13 @@ function RetailIntroductionsRequestedView({ refreshKey }) {
 
   async function saveOpportunity(id, patch) {
     setError("");
-    try { await api.updateOpportunity(id, patch); load(); }
+    try { await api.updateOpportunity(id, patch); await load(); }
     catch (e) { setError(e.message); }
   }
 
-  if (error) return <ErrorBanner text={error} />;
-  if (!intros) return <Spinner />;
+  // A failed Save shouldn't wipe the table — only show the bare error
+  // when the list itself couldn't load.
+  if (!intros) return error ? <ErrorBanner text={error} /> : <Spinner />;
   const rows = filterIntros(intros, search, statusFilter);
 
   return (
@@ -1681,15 +1824,18 @@ function RetailIntroductionsRequestedView({ refreshKey }) {
         emptyTitle={intros.length ? "No requests match your search" : "No introduction requests yet"}
         emptyText={intros.length ? "Try a different retailer name or status." : "Use Retailer Directory to ask RIV to route you to a retailer."}
         renderRow={(i) => (
-          <tr key={i.id}>
-            <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
-            <td style={cellStyle}>{dateStr(i.request_date)}</td>
-            <td style={cellStyle}><StatusBadge status={approvalStatusForStartup(i.approval_status)} colors={APPROVAL_COLORS} /></td>
-            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
-            <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
-            <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
-            <td style={cellStyle}><GhostButton onClick={() => setDetailIntro(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
-          </tr>
+          <DealEditableRow
+            key={i.id}
+            intro={i}
+            onSave={(patch) => saveOpportunity(i.id, patch)}
+            onViewDetails={() => setDetailIntro(i)}
+            leadingCells={<>
+              <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
+              <td style={cellStyle}>{dateStr(i.request_date)}</td>
+              <td style={cellStyle}><StatusBadge status={approvalStatusForStartup(i.approval_status)} colors={APPROVAL_COLORS} /></td>
+              <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
+            </>}
+          />
         )}
       />
       {detailIntro && <IntroDetailModal intro={detailIntro} onClose={() => setDetailIntro(null)} isAdmin={false} />}
@@ -1727,7 +1873,7 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
 
   async function saveOpportunity(id, patch) {
     setError("");
-    try { await api.updateOpportunity(id, patch); load(); }
+    try { await api.updateOpportunity(id, patch); await load(); }
     catch (e) { setError(e.message); }
   }
   // Restored startup-editable (24 Sep 2026 addendum) — see api.js's
@@ -1739,8 +1885,9 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
     finally { setSavingId(null); }
   }
 
-  if (error) return <ErrorBanner text={error} />;
-  if (!intros) return <Spinner />;
+  // A failed Save shouldn't wipe the table — only show the bare error
+  // when the list itself couldn't load.
+  if (!intros) return error ? <ErrorBanner text={error} /> : <Spinner />;
   const rows = filterIntros(intros, search, statusFilter);
 
   return (
@@ -1754,17 +1901,20 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
         emptyTitle={intros.length ? "No opportunities match your search" : "No opportunities yet"}
         emptyText={intros.length ? "Try a different retailer name or status." : "Opportunities RIV identifies for you will appear here."}
         renderRow={(i) => (
-          <tr key={i.id}>
-            <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
-            <td style={cellStyle}>{dateStr(i.request_date)}</td>
-            <td style={cellStyle}>
-              <CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} />
-            </td>
-            <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
-            <td style={cellStyle}><DealStatusCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
-            <td style={cellStyle}><OpportunityValueCell intro={i} onSave={(patch) => saveOpportunity(i.id, patch)} /></td>
-            <td style={cellStyle}><GhostButton onClick={() => setDetailIntro(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
-          </tr>
+          <DealEditableRow
+            key={i.id}
+            intro={i}
+            onSave={(patch) => saveOpportunity(i.id, patch)}
+            onViewDetails={() => setDetailIntro(i)}
+            leadingCells={<>
+              <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
+              <td style={cellStyle}>{dateStr(i.request_date)}</td>
+              <td style={cellStyle}>
+                <CommitStatusCell intro={i} busy={savingId === i.id} onSave={(v) => saveCommitStatus(i.id, v)} />
+              </td>
+              <td style={cellStyle}><StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} /></td>
+            </>}
+          />
         )}
       />
       {detailIntro && <IntroDetailModal intro={detailIntro} onClose={() => setDetailIntro(null)} isAdmin={false} />}
@@ -1800,10 +1950,106 @@ function RetailIntroductionsInitiatedByRivView({ refreshKey }) {
 // Confirmed. The declaration + "how introduced" fields stay with proof
 // submission below, since they only make sense once an introduction has
 // actually happened.
-function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
+// 24 Nov 2026 (sheet 24-11, GTM Partner "Introduce startup to retailer —
+// this page is messy" / "need to clearly show which startup–retailer
+// pairing is at what status: Pending RIV approval, Pending startup
+// status…"). The page is now three clearly separated parts:
+//   1. "Your introductions" — a table with one row per pairing and a
+//      single plain-English stage (below), plus what happens next, with
+//      a count strip for each stage on top.
+//   2. Step 1 — Check introduction interest (unchanged form).
+//   3. Step 2 — Submit proof, which now offers ONLY pairings that are
+//      actually ready (RIV-approved and startup-confirmed), instead of two
+//      full retailer/startup lists that mostly led to "not ready yet".
+// Steps 1 and 2 sit side by side on wide screens.
+//
+// partnerPairingStage — display only, derived from approval_status (the
+// stored values and every rule keyed off them are unchanged).
+const PARTNER_STAGES = [
+  { id: "pending-riv", label: "Pending RIV approval", next: "RIV is reviewing this pairing.", colors: { bg: "#FFF4E0", fg: "#B8790A" } },
+  { id: "pending-startup", label: "Pending startup confirmation", next: "RIV approved — waiting for the startup to confirm.", colors: { bg: "#E8F0FE", fg: BRAND.blue } },
+  { id: "ready", label: "Ready for proof", next: "Make the introduction, then submit proof in Step 2 below.", colors: { bg: "#EFE9FB", fg: "#6B3FBF" } },
+  { id: "introduced", label: "Introduced", next: "Proof received — track the deal on your Dashboard.", colors: { bg: "#E6F4EA", fg: "#1E7A34" } },
+  { id: "rejected", label: "Not approved by RIV", next: "RIV decided not to take this pairing forward.", colors: { bg: "#FBEAEA", fg: BRAND.coralDark } },
+];
+function partnerPairingStage(i) {
+  const id = i.approval_status === "Rejected" ? "rejected"
+    : i.approval_status === "Pending RIV Approval" ? "pending-riv"
+    : ["RIV Approved", "GTM Notified"].includes(i.approval_status) ? "pending-startup"
+    : i.approval_status === "Startup Confirmed" ? "ready"
+    : "introduced"; // Proof Recorded / Introduced
+  return PARTNER_STAGES.find((st) => st.id === id);
+}
+
+function PartnerIntroductionsOverview({ refreshKey, onOpen }) {
+  const [mine, setMine] = useState(null);
+  const [error, setError] = useState("");
+  const [stageFilter, setStageFilter] = useState("");
+  // GET /introductions with no ?initiatedBy filter already scopes to this
+  // partner server-side and returns Startup-/GTM Partner-/RIV-initiated
+  // rows alike (item 2b, 25 Sep 2026 batch).
+  useEffect(() => {
+    api.getIntroductions().then((r) => setMine(r.introductions)).catch((e) => setError(e.message));
+  }, [refreshKey]);
+
+  if (!mine) return error ? <ErrorBanner text={error} /> : <Spinner />;
+  const counts = Object.fromEntries(PARTNER_STAGES.map((st) => [st.id, mine.filter((i) => partnerPairingStage(i).id === st.id).length]));
+  const rows = stageFilter ? mine.filter((i) => partnerPairingStage(i).id === stageFilter) : mine;
+
+  return (
+    <div style={{ marginBottom: 30 }}>
+      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Your introductions</div>
+      <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12 }}>
+        Every startup–retailer pairing tied to you, whichever side started it, and the stage it's at. Click a stage to filter.
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        {PARTNER_STAGES.map((st) => {
+          const active = stageFilter === st.id;
+          return (
+            <button key={st.id} type="button" onClick={() => setStageFilter(active ? "" : st.id)} style={{
+              fontFamily: FONT, fontSize: 12, fontWeight: 600, padding: "7px 12px", borderRadius: 999, cursor: "pointer",
+              border: `1px solid ${active ? st.colors.fg : BRAND.line}`, background: active ? st.colors.bg : "#fff", color: active ? st.colors.fg : "#7A756F",
+            }}>
+              {st.label} · {counts[st.id]}
+            </button>
+          );
+        })}
+      </div>
+      <IntroTable
+        columns={["Startup", "Retailer", "Initiated by", "Date", "Stage", "What happens next", ""]}
+        rows={rows}
+        emptyIcon={Handshake}
+        emptyTitle={mine.length ? "Nothing at this stage" : "No introductions yet"}
+        emptyText={mine.length ? "Pick another stage above, or clear the filter." : "Pairings you propose, RIV routes to you, or a startup requests against your network will show up here."}
+        renderRow={(i) => {
+          const st = partnerPairingStage(i);
+          return (
+            <tr key={i.id}>
+              <td style={{ ...cellStyle, fontWeight: 700 }}>{i.startup_name}</td>
+              <td style={{ ...cellStyle, fontWeight: 700 }}>{i.retailer_name}</td>
+              <td style={cellStyle}>{initiatorLabel(i.initiated_by)}</td>
+              <td style={cellStyle}>{dateStr(i.request_date)}</td>
+              <td style={cellStyle}>
+                <StatusBadge status={st.label} colors={{ [st.label]: st.colors }} />
+                {i.duplicate_of_introduction_id && (
+                  <div style={{ fontFamily: FONT, fontSize: 11, color: "#8A6D00", marginTop: 4 }}>Possible duplicate</div>
+                )}
+              </td>
+              <td style={{ ...cellStyle, fontSize: 12, color: "#7A756F", maxWidth: 240 }}>
+                {st.id === "introduced" && i.engagement_stage ? `Deal status: ${i.engagement_stage}` : st.next}
+              </td>
+              <td style={cellStyle}><GhostButton onClick={() => onOpen(i)} style={{ padding: "6px 12px" }}>View Details</GhostButton></td>
+            </tr>
+          );
+        }}
+      />
+    </div>
+  );
+}
+
+function CheckIntroductionInterestSection({ onCreated }) {
   const [retailers, setRetailers] = useState(null);
   const [startups, setStartups] = useState(null);
-  const [mine, setMine] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
@@ -1816,17 +2062,6 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
     api.getRetailers().then((r) => setRetailers(r.retailers.filter((x) => x.status === "Active in network"))).catch((e) => setError(e.message));
     api.getStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message));
   }, []);
-
-  // item 2b (25 Sep 2026 batch) — unified activity feed: every
-  // introduction tied to this partner regardless of who initiated it.
-  // GET /introductions with no ?initiatedBy filter already scopes to
-  // `i.partner_id = <this partner>` server-side (see portal.js) and
-  // returns Startup-/GTM Partner-/RIV Admin-initiated rows alike — this
-  // used to pass "GTM Partner" here, which hid every pairing this partner
-  // didn't originate themselves.
-  useEffect(() => {
-    api.getIntroductions().then((r) => setMine(r.introductions)).catch((e) => setError(e.message));
-  }, [refreshKey]);
 
   async function submit() {
     setError(""); setBusy(true);
@@ -1843,16 +2078,16 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
   }
 
   return (
-    <div style={{ marginBottom: 30 }}>
-      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Check Introduction Interest with the Startup</div>
-      <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12 }}>
-        Pick any retailer from your network and any RISE portfolio startup to check interest. RIV reviews every submission before anyone is notified.
+    <div style={{ flex: "1 1 400px", minWidth: 0 }}>
+      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Step 1 — Check introduction interest with the startup</div>
+      <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12, minHeight: 32 }}>
+        Pick a retailer and a RISE portfolio startup. RIV reviews every submission before the startup is asked.
       </div>
-      <Card style={{ padding: 20, maxWidth: 520, marginBottom: 20 }}>
+      <Card style={{ padding: 20 }}>
         <ErrorBanner text={error} />
         {sent && (
           <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
-            Submitted — RIV will review and route this back to you.
+            Submitted — it now shows as "Pending RIV approval" in Your introductions above.
           </div>
         )}
         <Field label="Retailer" required hint="All retailers in your network can be selected.">
@@ -1877,161 +2112,113 @@ function CheckIntroductionInterestSection({ refreshKey, onOpen, onCreated }) {
           </select>
         </Field>
         <PrimaryButton
-          disabled={busy || !form.retailerId || !form.startupId || !form.opportunityContext}
+          disabled={busy || !form.retailerId || !form.startupId || !form.opportunityContext.trim()}
           onClick={submit} style={{ width: "100%" }}
         >
           Check introduction interest with the startup
         </PrimaryButton>
       </Card>
-
-      {/* item 2b — unified feed heading, distinct from the form above
-          (which only ever creates GTM-Partner-initiated rows). */}
-      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink, marginBottom: 4 }}>All introductions in your network</div>
-      <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", marginBottom: 10 }}>
-        Every pairing tied to you — whichever side started it.
-      </div>
-      {!mine ? <Spinner /> : !mine.length ? (
-        <EmptyState icon={Handshake} title="No introductions yet" text="Pairings you propose, RIV routes to you, or a startup requests against your network will show up below." />
-      ) : mine.map((i) => (
-        <Card key={i.id} onClick={() => onOpen(i)} style={{ padding: 16, marginBottom: 10, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink }}>{i.startup_name} <ArrowRight size={12} style={{ margin: "0 4px", verticalAlign: "middle" }} /> {i.retailer_name}</div>
-            <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginTop: 3 }}>Requested {dateStr(i.request_date)} · Initiated by: {initiatorLabel(i.initiated_by)}</div>
-            {/* item 13b — duplicate note in the partner's own feed. Only
-                ever set on Startup-initiated rows (a GTM-partner-initiated
-                duplicate is blocked outright at submission — see the 409
-                in portal.js), but check generically in case that changes. */}
-            {i.duplicate_of_introduction_id && (
-              <div style={{ fontFamily: FONT, fontSize: 11, color: "#8A6D00", marginTop: 4 }}>
-                Possible duplicate — already in the pipeline since {dateStr(i.duplicate_of_request_date)}.
-              </div>
-            )}
-          </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <StatusBadge status={introducedStatusFor(i.status, i.engagement_stage)} colors={INTRODUCED_STATUS_COLORS} />
-          </div>
-        </Card>
-      ))}
     </div>
   );
 }
 
-// Small helper for the Confirm Introduction dropdowns above — collapses a
-// list of introductions down to their distinct retailer (or startup) id/name
-// pairs, preserving first-seen order.
-function uniqueById(list, getId, getName) {
-  const seen = new Map();
-  for (const item of list) {
-    const id = getId(item);
-    if (!seen.has(id)) seen.set(id, { id, name: getName(item) });
-  }
-  return Array.from(seen.values());
-}
-
-// "Submit Proof of Startup-Retailer Introduction" (19 Sep 2026 feedback,
-// renamed + reworked from the old "Introduce Startup to Retailers" create
-// form; dropdowns broadened 19 Sep 2026 follow-up to match "Check
-// Introduction Interest" above). The Retailer/Startup dropdowns now list
-// the same full directories as the section above (not just pending
-// confirmations) for a consistent picker experience. What CAN actually be
-// submitted is still only a pairing the startup has confirmed interest in
-// (approval_status = 'Startup Confirmed') — that's resolved quietly in the
-// background against the Confirm Introduction queue once both are picked,
-// and the form tells the partner plainly if that pairing isn't ready yet
-// instead of hiding it from the list.
+// "Submit Proof of Startup-Retailer Introduction".
+//
+// 24 Nov 2026 (sheet 24-11, GTM Partner "In the drop down for actual intro
+// proof, only the pair that is approved by RIV and startup and the
+// retailer should be shown"). The two full Retailer / Startup dropdowns
+// (which let the partner pick any combination and then said "not ready
+// yet") are replaced by ONE "Startup → Retailer" dropdown fed by
+// GET /introductions/confirm-queue — i.e. only this partner's pairings at
+// approval_status 'Startup Confirmed' (RIV-approved AND startup-confirmed).
+// The backend's log-introduction route already refuses anything else.
+//
+// Same sheet: the Declaration is now visibly marked mandatory (required
+// asterisk), on top of already being enforced client- and server-side.
 function SubmitProofOfIntroductionSection({ refreshKey, onCreated }) {
-  const [retailers, setRetailers] = useState(null);
-  const [startups, setStartups] = useState(null);
-  const [pending, setPending] = useState(null); // Startup Confirmed queue, for matching only
+  const [ready, setReady] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
-  const [retailerFilter, setRetailerFilter] = useState("");
-  const [startupFilter, setStartupFilter] = useState("");
+  const [introId, setIntroId] = useState("");
   const [channel, setChannel] = useState("Email");
   const [proofFile, setProofFile] = useState(null);
   const [declaration, setDeclaration] = useState(false);
+  const fileInputRef = React.useRef(null);
 
-  useEffect(() => {
-    api.getRetailers().then((r) => setRetailers(r.retailers.filter((x) => x.status === "Active in network"))).catch((e) => setError(e.message));
-    api.getStartups().then((r) => setStartups(r.startups)).catch((e) => setError(e.message));
-  }, []);
+  useEffect(() => { api.getConfirmQueue().then((r) => setReady(r.introductions)).catch((e) => setError(e.message)); }, [refreshKey]);
 
-  useEffect(() => { api.getConfirmQueue().then((r) => setPending(r.introductions)).catch((e) => setError(e.message)); }, [refreshKey]);
-
-  const matchedIntro = (retailerFilter && startupFilter)
-    ? (pending || []).find((i) => String(i.retailer_id) === retailerFilter && String(i.startup_id) === startupFilter) || null
-    : null;
-  const bothPicked = !!retailerFilter && !!startupFilter;
+  const selected = (ready || []).find((i) => String(i.id) === introId) || null;
 
   async function submit() {
-    if (!matchedIntro) return;
+    if (!selected) return;
     setError(""); setBusy(true);
     try {
-      await api.logIntroductionWithProof(matchedIntro.id, { channel, declarationAccepted: declaration }, proofFile);
+      await api.logIntroductionWithProof(selected.id, { channel, declarationAccepted: declaration }, proofFile);
       setSent(true);
-      setRetailerFilter(""); setStartupFilter(""); setChannel("Email"); setProofFile(null); setDeclaration(false);
+      setIntroId(""); setChannel("Email"); setProofFile(null); setDeclaration(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       await onCreated();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
 
   return (
-    <div>
-      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Submit Proof of Startup-Retailer Introduction</div>
-      <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12 }}>
-        Select the retailer and startup, then attach proof to move a startup-confirmed pairing forward.
+    <div style={{ flex: "1 1 400px", minWidth: 0 }}>
+      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: BRAND.ink, marginBottom: 4 }}>Step 2 — Submit proof of introduction</div>
+      <div style={{ fontFamily: FONT, fontSize: 12, color: "#9B958F", marginBottom: 12, minHeight: 32 }}>
+        Only pairings approved by RIV and confirmed by the startup ("Ready for proof") can be picked here.
       </div>
-      <Card style={{ padding: 20, maxWidth: 520 }}>
+      <Card style={{ padding: 20 }}>
         <ErrorBanner text={error} />
         {sent && (
           <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#1E7A34", background: "#E6F4EA", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
-            Submitted — the introduction has been logged and moved forward.
+            Submitted — the introduction has been logged and now shows as "Introduced".
           </div>
         )}
-        <Field label="Retailer" required hint="All retailers in your network can be selected.">
-          <select style={inputStyle} value={retailerFilter} onChange={(e) => setRetailerFilter(e.target.value)}>
-            <option value="">Select…</option>
-            {(retailers || []).map((r) => <option key={r.id} value={r.id}>{r.brand || r.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Startup" required hint="All RISE portfolio startups can be selected.">
-          <select style={inputStyle} value={startupFilter} onChange={(e) => setStartupFilter(e.target.value)}>
-            <option value="">Select…</option>
-            {(startups || []).map((s) => <option key={s.id} value={s.id}>{s.startup_name}</option>)}
-          </select>
-        </Field>
-        {bothPicked && !matchedIntro && (
-          <div style={{ fontFamily: FONT, fontSize: 12, color: "#B8790A", background: "#FFF4E0", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
-            This pairing isn't ready for proof yet — RIV still needs to approve it and the startup needs to confirm (see "Check Introduction Interest with the Startup" above).
+        {!ready ? <Spinner /> : !ready.length ? (
+          <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", background: BRAND.cream, borderRadius: 10, padding: "12px 14px", lineHeight: 1.6 }}>
+            No pairings are ready for proof yet. A pairing appears here once RIV has approved it and the startup has confirmed — see "Your introductions" above for where each one stands.
           </div>
+        ) : (
+          <>
+            <Field label="Startup → Retailer" required hint="Approved by RIV and confirmed by the startup.">
+              <select style={inputStyle} value={introId} onChange={(e) => setIntroId(e.target.value)}>
+                <option value="">Select…</option>
+                {ready.map((i) => <option key={i.id} value={i.id}>{i.startup_name} → {i.retailer_name}</option>)}
+              </select>
+            </Field>
+            <Field label="How have you introduced the startup to the enterprise" required>
+              <select style={inputStyle} value={channel} onChange={(e) => setChannel(e.target.value)}>
+                <option value="Email">Email</option>
+                <option value="WhatsApp">WhatsApp</option>
+                <option value="LinkedIn">LinkedIn</option>
+                <option value="In-person">In person</option>
+              </select>
+            </Field>
+            <Field label="Provide proof of introduction" required hint="Attach a screenshot of the email/WhatsApp/LinkedIn exchange (or a PDF).">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,application/pdf"
+                onChange={(e) => setProofFile(e.target.files?.[0] || null)}
+                style={{ fontFamily: FONT, fontSize: 12.5 }}
+              />
+            </Field>
+            <Field label="Declaration" required>
+              <span style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+                <input type="checkbox" checked={declaration} onChange={(e) => setDeclaration(e.target.checked)} style={{ marginTop: 3 }} />
+                <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, lineHeight: 1.6 }}>I confirm that I have personally facilitated this introduction. The information submitted is accurate to the best of my knowledge.</span>
+              </span>
+            </Field>
+            <PrimaryButton
+              disabled={busy || !selected || !channel || !proofFile || !declaration}
+              onClick={submit} style={{ width: "100%" }}
+            >
+              Submit proof of introduction
+            </PrimaryButton>
+          </>
         )}
-        <Field label="How have you introduced the startup to the enterprise" required>
-          <select style={inputStyle} value={channel} onChange={(e) => setChannel(e.target.value)}>
-            <option value="Email">Email</option>
-            <option value="WhatsApp">WhatsApp</option>
-            <option value="LinkedIn">LinkedIn</option>
-            <option value="In-person">In person</option>
-          </select>
-        </Field>
-        <Field label="Provide proof of introduction" required hint="Attach a screenshot of the email/WhatsApp/LinkedIn exchange (or a PDF).">
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp,application/pdf"
-            onChange={(e) => setProofFile(e.target.files?.[0] || null)}
-            style={{ fontFamily: FONT, fontSize: 12.5 }}
-          />
-        </Field>
-        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 16, cursor: "pointer" }}>
-          <input type="checkbox" checked={declaration} onChange={(e) => setDeclaration(e.target.checked)} style={{ marginTop: 3 }} />
-          <span style={{ fontFamily: FONT, fontSize: 12.5, color: BRAND.ink, lineHeight: 1.6 }}>Declaration — I confirm that I have personally facilitated this introduction. The information submitted is accurate to the best of my knowledge.</span>
-        </label>
-        <PrimaryButton
-          disabled={busy || !matchedIntro || !channel || !proofFile || !declaration}
-          onClick={submit} style={{ width: "100%" }}
-        >
-          Submit proof of introduction
-        </PrimaryButton>
       </Card>
     </div>
   );
@@ -2040,8 +2227,11 @@ function SubmitProofOfIntroductionSection({ refreshKey, onCreated }) {
 function IntroduceStartupToRetailersView({ refreshKey, onOpen, onCreated }) {
   return (
     <div>
-      <CheckIntroductionInterestSection refreshKey={refreshKey} onOpen={onOpen} onCreated={onCreated} />
-      <SubmitProofOfIntroductionSection refreshKey={refreshKey} onCreated={onCreated} />
+      <PartnerIntroductionsOverview refreshKey={refreshKey} onOpen={onOpen} />
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <CheckIntroductionInterestSection onCreated={onCreated} />
+        <SubmitProofOfIntroductionSection refreshKey={refreshKey} onCreated={onCreated} />
+      </div>
     </div>
   );
 }
@@ -3509,7 +3699,10 @@ function NewOpportunityModal({ onClose, onCreated }) {
   // 16 Nov 2026 CEO feedback (defect 4) — same support_type flag the GTM
   // partner's Check Introduction Interest form already has, reused as-is
   // here rather than a separate field.
-  const [supportType, setSupportType] = useState("Intro Only");
+  // 24 Nov 2026 (sheet 24-11, admin) — Introduction context and Support
+  // type are both mandatory now. Support type starts blank so RIV makes
+  // an explicit choice instead of silently getting "Intro Only".
+  const [supportType, setSupportType] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -3523,7 +3716,7 @@ function NewOpportunityModal({ onClose, onCreated }) {
   async function submit() {
     setError(""); setBusy(true);
     try {
-      await api.createIntroductionAdmin({ startupId: Number(startupId), retailerId: Number(retailerId), context: context || undefined, supportType });
+      await api.createIntroductionAdmin({ startupId: Number(startupId), retailerId: Number(retailerId), context: context.trim(), supportType });
       await onCreated();
       onClose();
     } catch (err) { setError(err.message); }
@@ -3551,11 +3744,12 @@ function NewOpportunityModal({ onClose, onCreated }) {
               {retailers.map((r) => <option key={r.id} value={r.id}>{r.brand || r.name}</option>)}
             </select>
           </Field>
-          <Field label="Introduction context" hint="Why this pairing, for the startup to see on View Details.">
+          <Field label="Introduction context" required hint="Why this pairing, for the startup to see on View Details.">
             <textarea style={{ ...inputStyle, minHeight: 70 }} value={context} onChange={(e) => setContext(e.target.value)} />
           </Field>
-          <Field label="Support type" hint="Intro Only — RIV makes the introduction and steps back. Intro + Closure Support — RIV stays involved helping drive the deal to close.">
+          <Field label="Support type" required hint="Intro Only — RIV makes the introduction and steps back. Intro + Closure Support — RIV stays involved helping drive the deal to close.">
             <select style={inputStyle} value={supportType} onChange={(e) => setSupportType(e.target.value)}>
+              <option value="">Select…</option>
               <option value="Intro Only">Intro Only</option>
               <option value="Intro + Closure Support">Intro + Closure Support</option>
             </select>
@@ -3565,7 +3759,7 @@ function NewOpportunityModal({ onClose, onCreated }) {
               No RIV-Direct retailers in the directory yet.
             </div>
           )}
-          <PrimaryButton onClick={submit} disabled={busy || !startupId || !retailerId} style={{ width: "100%" }}>Create introduction</PrimaryButton>
+          <PrimaryButton onClick={submit} disabled={busy || !startupId || !retailerId || !context.trim() || !supportType} style={{ width: "100%" }}>Create introduction</PrimaryButton>
         </>
       )}
     </Modal>
@@ -3816,8 +4010,44 @@ export default function RiseGtmApp() {
     }
   }, [user, view]);
 
+  // 24 Nov 2026 (sheet 24-11, admin defect "session did not time out —
+  // since last evening it has still been on"). The server already ends a
+  // session after the idle timeout / session lifetime (Security Settings),
+  // but an open tab never found out until the next click failed. Two
+  // fixes: (1) any 401 from the API now fires SESSION_EXPIRED_EVENT (see
+  // api.js) and we drop straight back to login with the reason; (2) while
+  // signed in we check GET /auth/session-status every minute and whenever
+  // the tab regains focus. That check never counts as activity, so an
+  // untouched tab is signed out on schedule rather than kept alive.
+  const [signedOutNotice, setSignedOutNotice] = useState("");
+  useEffect(() => {
+    function onExpired(e) {
+      setSignedOutNotice(e.detail?.message || "Your session has ended — please sign in again.");
+      setUser(null);
+      setView(null);
+      setOpenIntro(null); setRequestRetailer(null); setShowAddRetailer(false); setDetailStartupId(null);
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
+  useEffect(() => {
+    if (!user) return;
+    const check = () => { api.sessionStatus().catch(() => {}); };
+    check();
+    const interval = setInterval(check, 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
+    };
+  }, [user]);
+
   function logout() {
     clearSession();
+    setSignedOutNotice("");
     setUser(null);
     setView(null);
   }
@@ -3826,7 +4056,7 @@ export default function RiseGtmApp() {
   if (!user) return (
     <>
       <GlobalStyle />
-      <LoginView onAuthed={(u) => { setUser(u); }} />
+      <LoginView key={signedOutNotice} notice={signedOutNotice} onAuthed={(u) => { setSignedOutNotice(""); setUser(u); }} />
     </>
   );
 

@@ -1,7 +1,7 @@
 const { Router } = require("express");
 const crypto = require("crypto");
 const { pool } = require("../db.js");
-const { requireAuth, createSession } = require("../middleware/auth.js");
+const { requireAuth, requireAuthNoTouch, createSession } = require("../middleware/auth.js");
 const { getSettings } = require("../lib/settings.js");
 const email = require("../lib/email.js");
 
@@ -220,6 +220,16 @@ router.post("/google", async (req, res, next) => {
 
 router.get("/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
+});
+
+// GET /auth/session-status — 24 Nov 2026 (sheet 24-11, admin defect
+// "session did not time out"). Polled by the frontend every minute and
+// whenever the tab regains focus, so an open-but-idle tab is sent back to
+// the login screen once the idle timeout / session lifetime has passed,
+// instead of sitting there looking signed in until the next click fails.
+// Uses requireAuthNoTouch: the poll itself never counts as activity.
+router.get("/session-status", requireAuthNoTouch, (req, res) => {
+  res.json({ ok: true });
 });
 
 module.exports = router;

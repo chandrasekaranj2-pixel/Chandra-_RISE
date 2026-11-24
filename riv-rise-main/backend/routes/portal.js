@@ -16,6 +16,8 @@ const { handleProofAttachmentUpload } = require("../lib/proofAttachmentUpload.js
 const { uploadSupportingMaterial, uploadProofAttachment, getSignedUrl } = require("../lib/supportingMaterialStorage.js");
 const { sendIntroductionRequestAck } = require("../lib/email.js");
 const notifyEmail = require("../lib/notify.js");
+const { isEmail, isUrl, blank, missingFields } = require("../lib/validate.js");
+const { RETAIL_CATEGORIES, COUNTRIES } = require("../lib/formOptions.js");
 
 const router = Router();
 router.use(requireAuth);
@@ -107,11 +109,16 @@ router.get("/startups/:id", requireRole("partner", "startup", "admin"), async (r
               solution_description, top_benefits, tech_stack, sub_vertical, competition,
               competitive_advantage, paying_customer_count, notable_customers, key_milestones,
               legal_entity, website, city, hq_country, year_incorporated, founding_team_details,
-              past_fund_raised, currently_raising_capital, fundraising_support_interest, additional_notes`;
+              past_fund_raised, additional_notes`;
+    // 24 Nov 2026 (sheet 24-11, GTM Partner "view details of startups —
+    // these two fields are not to be shown"): currently_raising_capital and
+    // fundraising_support_interest are RIV/startup-only, never sent to a
+    // GTM partner.
+    const fundraisingColumns = "currently_raising_capital, fundraising_support_interest";
     const columns = req.user.role === "startup"
-      ? sharedColumns
+      ? `${sharedColumns}, ${fundraisingColumns}`
       : req.user.role === "admin"
-      ? `${sharedColumns}, intro_fee_pct, active_commercialization_fee_pct, gtm_share_intro_pct, gtm_share_commercialization_pct`
+      ? `${sharedColumns}, ${fundraisingColumns}, intro_fee_pct, active_commercialization_fee_pct, gtm_share_intro_pct, gtm_share_commercialization_pct`
       : `${sharedColumns}, gtm_share_intro_pct, gtm_share_commercialization_pct`;
     const { rows } = await pool.query(
       `SELECT ${columns} FROM startups WHERE id = $1 AND status = 'Active'`,
@@ -179,7 +186,21 @@ router.post("/retailers", requireRole("partner"), async (req, res, next) => {
       name, brand, website, location, hqCountry, category,
       contactName, contactDesignation, contactEmail, contactPhone,
     } = req.body || {};
-    if (!name) return res.status(400).json({ error: "Enter the retail enterprise you are referring." });
+    // 24 Nov 2026 (sheet 24-11, GTM Partner "No data validation is done
+    // while adding Retailer — same as admin adding retailer"). Same rules
+    // as admin.js's POST /retailers: every field required except phone,
+    // valid URL/email, category and country from the fixed lists.
+    const missing = missingFields([
+      [name, "Retail enterprise you are referring"], [brand, "Brand you are introducing to"], [website, "Website"],
+      [location, "City where enterprise is headquartered"], [hqCountry, "HQ country"], [category, "Retail segment"],
+      [contactName, "Enterprise contact — full name"], [contactDesignation, "Enterprise contact — designation"],
+      [contactEmail, "Enterprise contact — email"],
+    ]);
+    if (missing) return res.status(400).json({ error: missing });
+    if (!isUrl(website)) return res.status(400).json({ error: "Enter a valid website URL (e.g. https://www.reliancetrends.com)." });
+    if (!isEmail(contactEmail)) return res.status(400).json({ error: "Enter a valid contact email address." });
+    if (!RETAIL_CATEGORIES.includes(category)) return res.status(400).json({ error: "Select a retail segment from the list." });
+    if (!COUNTRIES.includes(hqCountry)) return res.status(400).json({ error: "Select an HQ country from the list." });
 
     const { rows: p } = await pool.query("SELECT id FROM partners WHERE user_id = $1", [req.user.id]);
     const partnerId = p[0]?.id;
@@ -203,8 +224,8 @@ router.post("/retailers", requireRole("partner"), async (req, res, next) => {
           submitted_by_partner_id, contact_name, contact_designation, contact_email, contact_phone,
           status, duplicate_of_retailer_id)
        VALUES ($1,$2,$3,$4,$5,$6,'GTM Partner',$7,$7,$8,$9,$10,$11,$12,$13) RETURNING ${RETAILER_PUBLIC_COLUMNS}`,
-      [name, brand || null, website || null, location || null, hqCountry || null, category || null,
-       partnerId, contactName || null, contactDesignation || null, contactEmail || null, contactPhone || null,
+      [name.trim(), brand.trim(), website.trim(), location.trim(), hqCountry, category,
+       partnerId, contactName.trim(), contactDesignation.trim(), contactEmail.trim(), blank(contactPhone) ? null : String(contactPhone).trim(),
        status, duplicateOfId]
     );
     res.status(201).json({ retailer: rows[0] });
@@ -409,6 +430,18 @@ router.post("/introductions", requireRole("startup", "partner"), handleSupportin
       previouslyEngaged, priorEngagementDetails, consentAccepted,
     } = req.body || {};
     if (!retailerId) return res.status(400).json({ error: "Select the target enterprise (retailer)." });
+    // 24 Nov 2026 (sheet 24-11, startup "Request intro — fields have to be
+    // marked mandatory and to be mandatory"). Supporting material stays
+    // optional; prior engagement details are required only when the
+    // startup ticks "Previously engaged".
+    const missingRequestFields = [
+      [whyInterested, "Why interested in this enterprise"],
+      [problemSolved, "Problem solved for enterprise"],
+      [relevantOffering, "Relevant product/offering"],
+      [buyerPersona, "Desired buyer persona"],
+      ...(previouslyEngaged === "true" ? [[priorEngagementDetails, "Prior engagement details"]] : []),
+    ].filter(([v]) => !v || !String(v).trim()).map(([, label]) => label);
+    if (missingRequestFields.length) return res.status(400).json({ error: `Please fill in: ${missingRequestFields.join(", ")}.` });
     // Sent as a multipart form field now, so it arrives as the string "true", not a boolean.
     if (consentAccepted !== "true") return res.status(400).json({ error: "You must accept the Terms & Conditions to submit a request." });
 
@@ -812,9 +845,15 @@ router.get("/introductions/:id/proof-attachment", requireRole("partner", "startu
     const intro = rows[0];
     if (!intro) return res.status(404).json({ error: "Introduction not found." });
     if (!(await ownsIntro(req, intro))) return res.status(403).json({ error: "Not your introduction." });
-    if (!intro.proof_attachment) return res.status(404).json({ error: "No proof attachment on file." });
+    // 24 Nov 2026 (sheet 24-11, startup "View proof not working") — when
+    // RIV logs the introduction itself (admin's log-riv-proof), the file is
+    // stored in riv_proof_attachment, not proof_attachment, so this route
+    // answered "No proof attachment on file." even though proof existed.
+    // Fall back to the RIV-logged file; partner-logged proof still wins.
+    const file = intro.proof_attachment || intro.riv_proof_attachment;
+    if (!file) return res.status(404).json({ error: "No proof attachment on file." });
 
-    const url = await getSignedUrl(intro.proof_attachment.path);
+    const url = await getSignedUrl(file.path);
     res.redirect(url);
   } catch (err) {
     next(err);

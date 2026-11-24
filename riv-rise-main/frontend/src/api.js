@@ -23,6 +23,24 @@ export function clearSession() {
   localStorage.removeItem(USER_KEY);
 }
 
+// 24 Nov 2026 (sheet 24-11, admin defect "session did not time out") — a
+// 401 from any signed-in call means the server has ended this session
+// (idle timeout, session lifetime, force sign-out, or Inactive). Before
+// this, the app just showed the error text and kept looking signed in.
+// Now the stored session is cleared and the app shell (App.jsx root)
+// listens for this event and drops back to the login screen with the
+// server's message. The /auth/request-code and /auth/verify-code calls
+// are excluded: a 401 there just means "wrong code", not "signed out".
+export const SESSION_EXPIRED_EVENT = "rise-session-expired";
+function isSignInCall(path) {
+  return path.startsWith("/auth/") && path !== "/auth/session-status" && path !== "/auth/me";
+}
+function handleUnauthorized(path, status, message) {
+  if (status !== 401 || isSignInCall(path) || !getToken()) return;
+  clearSession();
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT, { detail: { message } }));
+}
+
 async function request(path, { method = "GET", body } = {}) {
   const headers = { "Content-Type": "application/json" };
   const token = getToken();
@@ -37,6 +55,7 @@ async function request(path, { method = "GET", body } = {}) {
   if (!res.ok) {
     let message = `Request failed (${res.status})`;
     try { message = (await res.json()).error || message; } catch {}
+    handleUnauthorized(path, res.status, message);
     throw new Error(message);
   }
   return res.json();
@@ -56,6 +75,7 @@ async function requestMultipart(path, { method = "POST", formData }) {
   if (!res.ok) {
     let message = `Request failed (${res.status})`;
     try { message = (await res.json()).error || message; } catch {}
+    handleUnauthorized(path, res.status, message);
     throw new Error(message);
   }
   return res.json();
@@ -74,6 +94,8 @@ export const api = {
   requestLoginCode: (email) => request("/auth/request-code", { method: "POST", body: { email } }),
   verifyLoginCode: (email, code) => request("/auth/verify-code", { method: "POST", body: { email, code } }),
   me: () => request("/auth/me"),
+  // Polled by the app shell; never counts as activity (see auth.js).
+  sessionStatus: () => request("/auth/session-status"),
 
   getMe: () => request("/me"),
   getStartups: () => request("/startups"),
