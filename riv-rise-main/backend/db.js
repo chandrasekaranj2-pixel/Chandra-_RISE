@@ -497,6 +497,15 @@ async function initSchema() {
     ALTER TABLE retailers ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
     ALTER TABLE retailers ADD COLUMN IF NOT EXISTS archived_by TEXT;
 
+    -- 24 Nov 2026 CS batch — session-security Phase 1 (login-code resend
+    -- cooldown/cap + a real 15-minute lock after 5 wrong attempts). The
+    -- cooldown/cap need no new column — they're computed from
+    -- login_codes.created_at, which already exists. The lock needs
+    -- somewhere to record "until when", since the old per-code attempts
+    -- counter resets the moment a fresh code is requested (no real lock
+    -- at all) — see routes/auth.js's request-code/verify-code.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+
     -- 7 Nov 2026 leader feedback — "Intro Only" vs "Intro + Closure Support"
     -- flag, set by the GTM partner on Check Introduction Interest. See
     -- SUPPORT_TYPES above. Defaults to 'Intro Only' so every pre-existing

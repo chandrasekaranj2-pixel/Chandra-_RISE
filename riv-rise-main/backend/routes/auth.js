@@ -50,6 +50,18 @@ router.post("/login", async (req, res, next) => {
   }
 });
 
+// 24 Nov 2026 CS batch — session-security Phase 1, shared by request-code
+// and verify-code below. `locked_until` is the real 15-minute lock after
+// 5 wrong verify attempts: checked in BOTH routes, not just verify-code,
+// because the old per-code attempts counter resets on every new code —
+// without this, someone locked out could just hit "Resend code" and keep
+// guessing immediately.
+function lockoutMessage(user) {
+  if (!user.locked_until || new Date(user.locked_until) <= new Date()) return null;
+  const mins = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
+  return `Too many incorrect attempts. Please try again in ${mins} minute${mins === 1 ? "" : "s"}.`;
+}
+
 // POST /auth/request-code — passwordless sign-in, step 1 (CEO request, Nov
 // 2026): email a one-time code to anyone who already has a RISE account.
 // Invite-only, same as every login method here: an email with no matching
@@ -65,6 +77,27 @@ router.post("/request-code", async (req, res, next) => {
     const user = rows[0];
     if (!user) return res.status(403).json({ error: NO_ACCESS_MESSAGE });
     if (!(await isAccountActive(user))) return res.status(403).json({ error: NO_ACCESS_MESSAGE });
+
+    const lockout = lockoutMessage(user);
+    if (lockout) return res.status(429).json({ error: lockout });
+
+    // 24 Nov 2026 CS batch — resend cooldown (60s) + hourly cap (5/hour),
+    // both read off login_codes.created_at (a row already exists per code
+    // sent) — no new table needed. Checked before generating a new code.
+    const { rows: recentRows } = await pool.query(
+      "SELECT created_at FROM login_codes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+      [user.id]
+    );
+    if (recentRows[0] && Date.now() - new Date(recentRows[0].created_at).getTime() < 60 * 1000) {
+      return res.status(429).json({ error: "Please wait 60 seconds before requesting another code." });
+    }
+    const { rows: hourRows } = await pool.query(
+      "SELECT COUNT(*)::int AS n FROM login_codes WHERE user_id = $1 AND created_at > now() - interval '1 hour'",
+      [user.id]
+    );
+    if (hourRows[0].n >= 5) {
+      return res.status(429).json({ error: "Too many codes requested. Please try again in an hour." });
+    }
 
     const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
     const codeHash = crypto.createHash("sha256").update(code).digest("hex");
@@ -102,6 +135,9 @@ router.post("/verify-code", async (req, res, next) => {
     const invalidMessage = "This code is incorrect or has expired. Request a new one.";
     if (!user) return res.status(401).json({ error: invalidMessage });
 
+    const lockout = lockoutMessage(user);
+    if (lockout) return res.status(429).json({ error: lockout });
+
     const { rows: codeRows } = await pool.query(
       `SELECT * FROM login_codes WHERE user_id = $1 AND used_at IS NULL AND expires_at > now() AND attempts < 5
        ORDER BY created_at DESC LIMIT 1`,
@@ -116,7 +152,18 @@ router.post("/verify-code", async (req, res, next) => {
       crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(codeRow.code_hash));
 
     if (!matches) {
-      await pool.query("UPDATE login_codes SET attempts = attempts + 1 WHERE id = $1", [codeRow.id]);
+      // 24 Nov 2026 CS batch — the 15-minute lock itself: the moment this
+      // code's attempts counter actually reaches 5 (not just "this was
+      // attempt #5 but a race already pushed it past 5 first"), stamp
+      // users.locked_until so request-code/verify-code both refuse for
+      // the next 15 minutes regardless of which code is used next.
+      const { rows: updatedRows } = await pool.query(
+        "UPDATE login_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts",
+        [codeRow.id]
+      );
+      if (updatedRows[0]?.attempts >= 5) {
+        await pool.query("UPDATE users SET locked_until = now() + interval '15 minutes' WHERE id = $1", [user.id]);
+      }
       return res.status(401).json({ error: invalidMessage });
     }
     if (!(await isAccountActive(user))) return res.status(403).json({ error: DEACTIVATED_MESSAGE });

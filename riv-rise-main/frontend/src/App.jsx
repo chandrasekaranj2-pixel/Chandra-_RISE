@@ -515,12 +515,23 @@ function LoginView({ onAuthed }) {
     }
   }
 
+  // 24 Nov 2026 CS batch — client-side mirror of the backend's 60-second
+  // resend cooldown (routes/auth.js), so the button visibly counts down
+  // instead of just failing with a 429 if someone clicks it early.
+  const [resendCooldown, setResendCooldown] = useState(0);
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
+
   async function sendCode(e) {
     e.preventDefault();
     setError(""); setLoading(true);
     try {
       await api.requestLoginCode(email.trim());
       setMode("code-sent");
+      setResendCooldown(60);
     } catch (err) {
       setError(err.message || "Couldn't send a code — please try again.");
     } finally {
@@ -601,8 +612,8 @@ function LoginView({ onAuthed }) {
                 <button type="button" onClick={() => switchMode("code-request")} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
                   Use a different email
                 </button>
-                <button type="button" onClick={sendCode} disabled={loading} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: "underline" }}>
-                  Resend code
+                <button type="button" onClick={sendCode} disabled={loading || resendCooldown > 0} style={{ background: "none", border: "none", cursor: resendCooldown > 0 ? "default" : "pointer", fontFamily: FONT, fontSize: 12, color: "#9B958F", textDecoration: resendCooldown > 0 ? "none" : "underline" }}>
+                  {resendCooldown > 0 ? `Resend code (${resendCooldown}s)` : "Resend code"}
                 </button>
               </div>
             </form>
