@@ -1,8 +1,8 @@
 const { Router } = require("express");
 const crypto = require("crypto");
-const bcrypt = require("bcryptjs");
 const { pool } = require("../db.js");
 const { requireAuth, createSession } = require("../middleware/auth.js");
+const { getSettings } = require("../lib/settings.js");
 const email = require("../lib/email.js");
 
 const router = Router();
@@ -28,27 +28,13 @@ async function isAccountActive(user) {
   return row.status !== "Inactive" && row.portal_login_status !== "Suspended";
 }
 
-router.post("/login", async (req, res, next) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: "Email and password are required." });
-
-    const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [String(email).toLowerCase().trim()]);
-    const user = rows[0];
-    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-      return res.status(401).json({ error: "Incorrect email or password." });
-    }
-    if (!(await isAccountActive(user))) return res.status(403).json({ error: DEACTIVATED_MESSAGE });
-
-    const token = await createSession(user);
-    res.json({
-      token,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role, company: user.company },
-    });
-  } catch (err) {
-    next(err);
-  }
-});
+// 24 Nov 2026 CS batch — POST /login (email + password) removed entirely.
+// Password sign-in had already been hidden from the login screen for every
+// role since 20 Nov 2026 (code-request is the only reachable mode) — this
+// route, and the "Reset password" admin control that set a password for
+// it, had nothing left that could ever call them. Passwordless (one-time
+// email code) and Google sign-in (POST /google, below) are the two login
+// paths now.
 
 // 24 Nov 2026 CS batch — session-security Phase 1, shared by request-code
 // and verify-code below. `locked_until` is the real 15-minute lock after
@@ -81,29 +67,32 @@ router.post("/request-code", async (req, res, next) => {
     const lockout = lockoutMessage(user);
     if (lockout) return res.status(429).json({ error: lockout });
 
-    // 24 Nov 2026 CS batch — resend cooldown (60s) + hourly cap (5/hour),
-    // both read off login_codes.created_at (a row already exists per code
-    // sent) — no new table needed. Checked before generating a new code.
+    // 24 Nov 2026 CS batch — resend cooldown + hourly cap, both read off
+    // login_codes.created_at (a row already exists per code sent) — no new
+    // table needed. Checked before generating a new code. As of Phase 3,
+    // both limits (and the OTP validity below) come from app_settings
+    // instead of being hard-coded, so admin can tune them without a deploy.
+    const settings = await getSettings();
     const { rows: recentRows } = await pool.query(
       "SELECT created_at FROM login_codes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
       [user.id]
     );
-    if (recentRows[0] && Date.now() - new Date(recentRows[0].created_at).getTime() < 60 * 1000) {
-      return res.status(429).json({ error: "Please wait 60 seconds before requesting another code." });
+    if (recentRows[0] && Date.now() - new Date(recentRows[0].created_at).getTime() < settings.resend_cooldown_seconds * 1000) {
+      return res.status(429).json({ error: `Please wait ${settings.resend_cooldown_seconds} seconds before requesting another code.` });
     }
     const { rows: hourRows } = await pool.query(
       "SELECT COUNT(*)::int AS n FROM login_codes WHERE user_id = $1 AND created_at > now() - interval '1 hour'",
       [user.id]
     );
-    if (hourRows[0].n >= 5) {
+    if (hourRows[0].n >= settings.resend_hourly_cap) {
       return res.status(429).json({ error: "Too many codes requested. Please try again in an hour." });
     }
 
     const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
     const codeHash = crypto.createHash("sha256").update(code).digest("hex");
     await pool.query(
-      "INSERT INTO login_codes (user_id, code_hash, expires_at) VALUES ($1, $2, now() + interval '10 minutes')",
-      [user.id, codeHash]
+      "INSERT INTO login_codes (user_id, code_hash, expires_at) VALUES ($1, $2, now() + ($3 || ' minutes')::interval)",
+      [user.id, codeHash, settings.otp_validity_minutes]
     );
 
     await email.safely("Login-code", () =>
@@ -138,10 +127,11 @@ router.post("/verify-code", async (req, res, next) => {
     const lockout = lockoutMessage(user);
     if (lockout) return res.status(429).json({ error: lockout });
 
+    const settings = await getSettings();
     const { rows: codeRows } = await pool.query(
-      `SELECT * FROM login_codes WHERE user_id = $1 AND used_at IS NULL AND expires_at > now() AND attempts < 5
+      `SELECT * FROM login_codes WHERE user_id = $1 AND used_at IS NULL AND expires_at > now() AND attempts < $2
        ORDER BY created_at DESC LIMIT 1`,
-      [user.id]
+      [user.id, settings.max_code_attempts]
     );
     const codeRow = codeRows[0];
     if (!codeRow) return res.status(401).json({ error: invalidMessage });
@@ -161,8 +151,11 @@ router.post("/verify-code", async (req, res, next) => {
         "UPDATE login_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts",
         [codeRow.id]
       );
-      if (updatedRows[0]?.attempts >= 5) {
-        await pool.query("UPDATE users SET locked_until = now() + interval '15 minutes' WHERE id = $1", [user.id]);
+      if (updatedRows[0]?.attempts >= settings.max_code_attempts) {
+        await pool.query(
+          "UPDATE users SET locked_until = now() + ($2 || ' minutes')::interval WHERE id = $1",
+          [user.id, settings.lockout_minutes]
+        );
       }
       return res.status(401).json({ error: invalidMessage });
     }

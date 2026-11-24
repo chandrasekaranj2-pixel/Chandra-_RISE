@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const { pool, INTRODUCTION_STATUSES, APPROVAL_STATUSES, DEAL_STATUSES, COMMIT_STATUSES, SUPPORT_TYPES } = require("../db.js");
 const { requireAuth, requireAdmin, forceSignOutUser } = require("../middleware/auth.js");
+const { getSettings, updateSettings } = require("../lib/settings.js");
 const portalRoutes = require("./portal.js");
 const { computePartnerFee, startupIntroCapMessage } = portalRoutes;
 const { getSignedUrl, uploadProofAttachment } = require("../lib/supportingMaterialStorage.js");
@@ -17,6 +18,34 @@ const { isEmail, isUrl, blank, missingFields } = require("../lib/validate.js");
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
+
+// ---------- Security settings (Phase 3) ----------
+
+// GET /api/admin/settings — every number from the session-security audit
+// that RIV admin can now tune without a code change: OTP validity,
+// wrong-code attempt cap, resend cooldown/hourly cap, lockout minutes,
+// idle timeout, session lifetime, concurrent-device cap.
+router.get("/settings", async (req, res, next) => {
+  try {
+    const settings = await getSettings();
+    res.json({ settings });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/settings — partial update; only the fields present in the
+// body are changed. Validated server-side (backend/lib/settings.js) so a
+// bad value (e.g. 0 minutes) can't lock everyone out or disable a limit.
+router.put("/settings", async (req, res, next) => {
+  try {
+    const { settings, errors } = await updateSettings(req.body || {}, req.user.email);
+    if (errors) return res.status(400).json({ error: errors.join(" ") });
+    res.json({ settings });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ---------- Dashboard ----------
 
@@ -263,15 +292,12 @@ router.post("/partners/:id/force-signout", async (req, res, next) => {
 // RISE Portal login (PRD §6.1 step 5).
 router.post("/partners/:id/provision-login", async (req, res, next) => {
   try {
-    const { password } = req.body || {};
-    // Nov 2026 — "Grant Portal Access" sends no password at all (passwordless
-    // by default now: the partner signs in with a one-time email code). A
-    // password is only set when admin explicitly typed one via "Reset
-    // password" on an already-provisioned partner — still supported for
-    // whoever prefers it, just no longer how anyone new gets started.
-    if (password && String(password).length < 8) return res.status(400).json({ error: "A password of at least 8 characters is required." });
-    const passwordless = !password;
-
+    // 24 Nov 2026 CS batch — "Reset password"/typed-password support
+    // removed. Password sign-in was already unreachable from the login
+    // screen for every role (20 Nov 2026 decision), which made the typed-
+    // password option here a dead end: a partner could be given a temp
+    // password with no way to ever use it. "Grant Portal Access" is now the
+    // only path — always passwordless (one-time email code).
     const { rows: partnerRows } = await pool.query("SELECT * FROM partners WHERE id = $1", [req.params.id]);
     const partner = partnerRows[0];
     if (!partner) return res.status(404).json({ error: "Partner not found." });
@@ -290,14 +316,12 @@ router.post("/partners/:id/provision-login", async (req, res, next) => {
       });
     }
 
-    // Only the FIRST provisioning gets the "login is ready" email; the same
-    // route also resets a password, which shouldn't email anyone.
+    // Only the FIRST provisioning gets the "login is ready" email.
     const firstTime = partner.portal_login_status !== "Provisioned";
-    // A passwordless grant still needs *something* in password_hash (the
-    // column is NOT NULL) — a long random value nobody is ever told, so
-    // password login simply can't work for this account unless admin later
-    // sets a real one via "Reset password".
-    const password_hash = bcrypt.hashSync(password || crypto.randomBytes(32).toString("hex"), 10);
+    // password_hash is still NOT NULL on users — this is a long random
+    // value nobody is ever told, since password login isn't reachable from
+    // anywhere in the app any more.
+    const password_hash = bcrypt.hashSync(crypto.randomBytes(32).toString("hex"), 10);
     const { rows: userRows } = await pool.query(
       `INSERT INTO users (email, password_hash, name, role, company) VALUES ($1,$2,$3,'partner',$4)
        ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'partner'
@@ -308,8 +332,8 @@ router.post("/partners/:id/provision-login", async (req, res, next) => {
       "UPDATE partners SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
       [req.params.id, userRows[0].id]
     );
-    if (firstTime) await notify.loginReady({ role: "partner", row: partner, passwordless });
-    res.json({ ok: true, email: partner.email, passwordless });
+    if (firstTime) await notify.loginReady({ role: "partner", row: partner });
+    res.json({ ok: true, email: partner.email });
   } catch (err) {
     next(err);
   }
@@ -621,14 +645,8 @@ router.post("/startups/:id/force-signout", async (req, res, next) => {
 
 router.post("/startups/:id/provision-login", async (req, res, next) => {
   try {
-    const { password } = req.body || {};
-    // Nov 2026 — same passwordless-by-default change as the partner route
-    // above: "Grant Portal Access" sends no password; one is only set when
-    // admin explicitly typed one via "Reset password" on an already-
-    // provisioned startup.
-    if (password && String(password).length < 8) return res.status(400).json({ error: "A password of at least 8 characters is required." });
-    const passwordless = !password;
-
+    // 24 Nov 2026 CS batch — same typed-password removal as the partner
+    // route above; see its comment.
     const { rows: startupRows } = await pool.query("SELECT * FROM startups WHERE id = $1", [req.params.id]);
     const startup = startupRows[0];
     if (!startup) return res.status(404).json({ error: "Startup not found." });
@@ -646,7 +664,7 @@ router.post("/startups/:id/provision-login", async (req, res, next) => {
     }
 
     const firstTime = startup.portal_login_status !== "Provisioned";
-    const password_hash = bcrypt.hashSync(password || crypto.randomBytes(32).toString("hex"), 10);
+    const password_hash = bcrypt.hashSync(crypto.randomBytes(32).toString("hex"), 10);
     const { rows: userRows } = await pool.query(
       `INSERT INTO users (email, password_hash, name, role, company) VALUES ($1,$2,$3,'startup',$4)
        ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'startup'
@@ -657,8 +675,8 @@ router.post("/startups/:id/provision-login", async (req, res, next) => {
       "UPDATE startups SET user_id = $2, portal_login_status = 'Provisioned', updated_at = now() WHERE id = $1",
       [req.params.id, userRows[0].id]
     );
-    if (firstTime) await notify.loginReady({ role: "startup", row: startup, passwordless });
-    res.json({ ok: true, email: startup.email, passwordless });
+    if (firstTime) await notify.loginReady({ role: "startup", row: startup });
+    res.json({ ok: true, email: startup.email });
   } catch (err) {
     next(err);
   }

@@ -62,7 +62,9 @@ async function requestMultipart(path, { method = "POST", formData }) {
 }
 
 export const api = {
-  login: (email, password) => request("/auth/login", { method: "POST", body: { email, password } }),
+  // 24 Nov 2026 CS batch — api.login (email + password) removed. Password
+  // sign-in was already unreachable from the login screen for every role
+  // (20 Nov 2026 decision), and the backend route it called is gone too.
   // "Sign in with Google" (CEO request, Nov 2026) — sends the ID token
   // Google's own button hands back; the backend verifies it and matches
   // the email to an existing partner/startup/admin record.
@@ -182,7 +184,7 @@ export const api = {
   listPartners: (archived) => request(`/admin/partners${archived ? "?archived=true" : ""}`),
   createPartner: (payload) => request("/admin/partners", { method: "POST", body: payload }),
   updatePartner: (id, payload) => request(`/admin/partners/${id}`, { method: "PUT", body: payload }),
-  provisionPartnerLogin: (id, password) => request(`/admin/partners/${id}/provision-login`, { method: "POST", body: { password } }),
+  provisionPartnerLogin: (id) => request(`/admin/partners/${id}/provision-login`, { method: "POST" }),
   deletePartner: (id) => request(`/admin/partners/${id}`, { method: "DELETE" }),
   archivePartner: (id) => request(`/admin/partners/${id}/archive`, { method: "PUT" }),
   unarchivePartner: (id) => request(`/admin/partners/${id}/unarchive`, { method: "PUT" }),
@@ -199,10 +201,13 @@ export const api = {
   // sign-out" button.
   forcePartnerSignOut: (id) => request(`/admin/partners/${id}/force-signout`, { method: "POST" }),
   forceStartupSignOut: (id) => request(`/admin/startups/${id}/force-signout`, { method: "POST" }),
+  // 24 Nov 2026 CS batch — session-security Phase 3's admin settings screen.
+  getSettings: () => request("/admin/settings"),
+  updateSettings: (payload) => request("/admin/settings", { method: "PUT", body: payload }),
   listStartups: (archived) => request(`/admin/startups${archived ? "?archived=true" : ""}`),
   createStartup: (payload) => request("/admin/startups", { method: "POST", body: payload }),
   updateStartup: (id, payload) => request(`/admin/startups/${id}`, { method: "PUT", body: payload }),
-  provisionStartupLogin: (id, password) => request(`/admin/startups/${id}/provision-login`, { method: "POST", body: { password } }),
+  provisionStartupLogin: (id) => request(`/admin/startups/${id}/provision-login`, { method: "POST" }),
   deleteStartup: (id) => request(`/admin/startups/${id}`, { method: "DELETE" }),
   archiveStartup: (id) => request(`/admin/startups/${id}/archive`, { method: "PUT" }),
   unarchiveStartup: (id) => request(`/admin/startups/${id}/unarchive`, { method: "PUT" }),

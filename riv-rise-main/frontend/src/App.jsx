@@ -464,24 +464,23 @@ function GoogleSignInButton({ onCredential, onError }) {
 
 function LoginView({ onAuthed }) {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  // "password" | "code-request" | "code-sent" — passwordless email sign-in
-  // (CEO request, Nov 2026). Google sign-in (below) is a third, independent
-  // way in, shown alongside whichever of these is active.
+  // "code-request" | "code-sent" — passwordless email sign-in (CEO request,
+  // Nov 2026). Google sign-in (below) is a second, independent way in,
+  // shown alongside whichever of these is active.
   //
-  // 20 Nov 2026 CS batch — "Sign in using code" is now the only screen
-  // anyone sees (default AND only reachable mode): the password form below
-  // is left in place, dormant, exactly like handleGoogle/GoogleSignInButton
-  // further down, so it can be restored in one line if ever needed, but
-  // there is no longer any button/link in the UI that can reach it.
+  // 24 Nov 2026 CS batch — the dormant password-sign-in mode (hidden since
+  // 20 Nov 2026, never reachable from this screen) has been removed
+  // entirely, along with the backend route and admin's "Reset password"
+  // control it depended on — all three were a dead end with nothing left
+  // that could reach them. Code-request is now the only mode this view has.
   const [mode, setMode] = useState("code-request");
 
-  // Shared by password login, email-code login, and Google sign-in — all
-  // three return the same { token, user } shape from the backend. None of
-  // them ever creates a new account here: an email that isn't already a
+  // Shared by email-code login and Google sign-in — both return the same
+  // { token, user } shape from the backend. Neither ever creates a new
+  // account here: an email that isn't already a
   // partner/startup/admin record (or one RIV admin deactivated) is rejected
   // with a clear message — RIV decides who's on RISE, same as today.
   function finishLogin({ token, user }) {
@@ -498,18 +497,6 @@ function LoginView({ onAuthed }) {
       finishLogin(await api.googleLogin(credential));
     } catch (err) {
       setError(err.message || "Google sign-in failed.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function submit(e) {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try {
-      finishLogin(await api.login(email.trim(), password));
-    } catch (err) {
-      setError(err.message || "Login failed.");
     } finally {
       setLoading(false);
     }
@@ -566,14 +553,6 @@ function LoginView({ onAuthed }) {
           <div style={{ fontFamily: FONT, fontSize: 13, color: "#9B958F", marginTop: 6 }}>Retail Innovation Scaling Engine</div>
         </div>
         <Card style={{ padding: 26 }}>
-          {/* 20 Nov 2026 CS batch — password sign-in removed from the login
-              screen for every role, admins included (confirmed decision:
-              hide the UI only). submit()/password state above are kept,
-              unused, so the backend's password route and admin's "Reset
-              password" action still work as a dormant fallback — this is
-              just no longer reachable from here. Restore this block (and
-              the "Use password instead" link it used to pair with) to
-              bring the tab back. */}
           {mode === "code-request" && (
             <form onSubmit={sendCode}>
               <ErrorBanner text={error} />
@@ -649,6 +628,9 @@ function navItemsFor(role) {
     { id: "overview", label: "Overview" }, { id: "partners", label: "GTM Partners" }, { id: "startups", label: "Startups" },
     { id: "retailers", label: "Retailers" }, { id: "introductions", label: "Introductions" },
     { id: "invoices", label: "Invoices" }, { id: "payouts", label: "Payouts" },
+    // 24 Nov 2026 CS batch — session-security Phase 3's admin-editable
+    // settings screen.
+    { id: "settings", label: "Security Settings" },
   ];
 }
 
@@ -2347,8 +2329,6 @@ function AdminPartnersView() {
   const [warning, setWarning] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState(EMPTY_PARTNER_FORM);
-  const [provisioning, setProvisioning] = useState(null);
-  const [pwField, setPwField] = useState("");
   // item 13 — guards against a double-click/double-submit on Provision
   // firing two overlapping POSTs before the first one's response (and the
   // resulting portal_login_status flip) comes back and hides the button.
@@ -2394,17 +2374,12 @@ function AdminPartnersView() {
     }
     catch (e) { setError(e.message); }
   }
-  async function provision(p) {
-    if (provisionBusy) return;
-    setError(""); setProvisionBusy(true);
-    try { await api.provisionPartnerLogin(p.id, pwField); setProvisioning(null); setPwField(""); await load(); }
-    catch (e) { setError(e.message); }
-    finally { setProvisionBusy(false); }
-  }
   // Nov 2026 — "Grant Portal Access": no password typed or shared. The
-  // partner signs in with a one-time email code from day one; see
-  // provision() above (still used by "Reset password" on an already-
-  // provisioned partner, for whoever prefers a password instead).
+  // partner signs in with a one-time email code from day one.
+  // 24 Nov 2026 CS batch — the "Reset password" control (and its
+  // provision()/pwField/provisioning state) is gone: password sign-in isn't
+  // reachable from the login screen for anyone, so a typed temp password
+  // had nowhere left to ever be used.
   async function grantAccess(p) {
     if (provisionBusy) return;
     setError(""); setProvisionBusy(true);
@@ -2524,26 +2499,12 @@ function AdminPartnersView() {
                 {signingOutId === p.id ? "Signing out…" : "Force sign-out"}
               </GhostButton>
             )}
-            {/* 3 Nov 2026 fix — reset-password path: the status gate used to hide
-                this entirely once portal_login_status === "Provisioned", leaving
-                no way to change an existing partner's password from the UI. The
-                backend route already upserts the password on re-provision, so we
-                just always show the control and relabel it when one already exists.
-                Nov 2026 passwordless change: that control now only applies once
-                already provisioned ("Reset password", for whoever wants one). A
-                partner not yet provisioned gets a single "Grant Portal Access"
-                click instead — no password field, no password to share; see
-                grantAccess() above. */}
-            {p.portal_login_status === "Provisioned" ? (
-              provisioning === p.id ? (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                  <PrimaryButton onClick={() => provision(p)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
-                </div>
-              ) : (
-                <GhostButton onClick={() => setProvisioning(p.id)}>Reset password</GhostButton>
-              )
-            ) : (
+            {/* 24 Nov 2026 CS batch — "Reset password" removed (see the
+                comment above grantAccess()). A partner not yet provisioned
+                gets a single "Grant Portal Access" click; one already
+                provisioned needs no control here at all — Force sign-out
+                above covers ending an existing session. */}
+            {p.portal_login_status !== "Provisioned" && (
               <GhostButton onClick={() => grantAccess(p)} disabled={provisionBusy}>
                 {provisionBusy ? "Granting…" : "Grant Portal Access"}
               </GhostButton>
@@ -2784,8 +2745,6 @@ function AdminStartupsView() {
     introFeePct: "", activeCommercializationFeePct: "", gtmShareIntroPct: "", gtmShareCommercializationPct: "",
   };
   const [form, setForm] = useState(blankForm);
-  const [provisioning, setProvisioning] = useState(null);
-  const [pwField, setPwField] = useState("");
   const [provisionBusy, setProvisionBusy] = useState(false); // item 13
   const [detailStartupId, setDetailStartupId] = useState(null);
   const [editingStartup, setEditingStartup] = useState(null);
@@ -2838,15 +2797,10 @@ function AdminStartupsView() {
     } catch (e) { setWarning(e.message); }
     finally { setResendingId(null); }
   }
-  async function provision(s) {
-    if (provisionBusy) return;
-    setError(""); setProvisionBusy(true);
-    try { await api.provisionStartupLogin(s.id, pwField); setProvisioning(null); setPwField(""); await load(); }
-    catch (e) { setError(e.message); }
-    finally { setProvisionBusy(false); }
-  }
   // Nov 2026 — "Grant Portal Access": no password typed or shared, same
-  // reasoning as AdminPartnersView's grantAccess() above.
+  // reasoning as AdminPartnersView's grantAccess() above. 24 Nov 2026 CS
+  // batch — the "Reset password" control (and provision()/pwField/
+  // provisioning state) is gone; see AdminPartnersView's comment.
   async function grantAccess(s) {
     if (provisionBusy) return;
     setError(""); setProvisionBusy(true);
@@ -2943,21 +2897,9 @@ function AdminStartupsView() {
                 {signingOutId === s.id ? "Signing out…" : "Force sign-out"}
               </GhostButton>
             )}
-            {/* 3 Nov 2026 fix — same reset-password gate removed as on the
-                Partners card; see comment there. Nov 2026 passwordless
-                change: same split as the Partners card — "Grant Portal
-                Access" (one click, no password) until first provisioned,
-                "Reset password" (typed, optional) after. */}
-            {s.portal_login_status === "Provisioned" ? (
-              provisioning === s.id ? (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input style={{ ...inputStyle, width: 150 }} placeholder="Temp password" value={pwField} onChange={(e) => setPwField(e.target.value)} />
-                  <PrimaryButton onClick={() => provision(s)} disabled={pwField.length < 8 || provisionBusy}>{provisionBusy ? "Saving…" : "Save"}</PrimaryButton>
-                </div>
-              ) : (
-                <GhostButton onClick={() => setProvisioning(s.id)}>Reset password</GhostButton>
-              )
-            ) : (
+            {/* 24 Nov 2026 CS batch — "Reset password" removed, same as on
+                the Partners card; see its comment. */}
+            {s.portal_login_status !== "Provisioned" && (
               <GhostButton onClick={() => grantAccess(s)} disabled={provisionBusy}>
                 {provisionBusy ? "Granting…" : "Grant Portal Access"}
               </GhostButton>
@@ -3744,6 +3686,117 @@ function AdminPayoutsView() {
   );
 }
 
+// 24 Nov 2026 CS batch — session-security Phase 3. Every number from the
+// original audit table (OTP validity, wrong-code attempts, resend cooldown/
+// hourly cap, idle timeout, session lifetime, concurrent sessions) that
+// used to be hard-coded in the backend now lives in app_settings and is
+// editable here — no code change or deploy needed to tune any of these
+// going forward. "Admin force sign-out" itself is an action, not a number,
+// so it stays on the Partners/Startups cards rather than here.
+function SettingsNumberField({ label, hint, value, onChange, min, max }) {
+  return (
+    <Field label={label} hint={hint}>
+      <input
+        type="number" min={min} max={max} style={{ ...inputStyle, width: 140 }}
+        value={value} onChange={(e) => onChange(e.target.value)}
+      />
+    </Field>
+  );
+}
+
+function AdminSettingsView() {
+  const [settings, setSettings] = useState(null);
+  const [form, setForm] = useState(null);
+  const [error, setError] = useState("");
+  const [success, showSuccess] = useSuccessMessage();
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    api.getSettings().then((r) => { setSettings(r.settings); setForm(r.settings); }).catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function save() {
+    setSaving(true); setError("");
+    try {
+      const r = await api.updateSettings(form);
+      setSettings(r.settings); setForm(r.settings);
+      showSuccess("Settings saved. These apply right away — no restart needed.");
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  }
+
+  if (error) return <ErrorBanner text={error} />;
+  if (!settings || !form) return <Spinner />;
+
+  return (
+    <div>
+      <SuccessBanner text={success} />
+      <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#9B958F", marginBottom: 18, maxWidth: 640 }}>
+        These control how RISE Portal logins and sessions behave for everyone — GTM partners, startups, and admins.
+        Changes here take effect immediately for new logins and requests (existing sessions already open aren't
+        retroactively shortened or extended).
+      </div>
+
+      <Card style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink, marginBottom: 14 }}>Passwordless sign-in codes</div>
+        <SettingsNumberField
+          label="Code validity (minutes)" min={1} max={60}
+          hint="How long a one-time email code stays valid before it expires."
+          value={form.otp_validity_minutes} onChange={(v) => setForm({ ...form, otp_validity_minutes: v })}
+        />
+        <SettingsNumberField
+          label="Wrong-code attempts allowed" min={3} max={20}
+          hint="How many incorrect codes someone can try before they're locked out."
+          value={form.max_code_attempts} onChange={(v) => setForm({ ...form, max_code_attempts: v })}
+        />
+        <SettingsNumberField
+          label="Lockout duration (minutes)" min={1} max={1440}
+          hint="How long someone is locked out after too many wrong attempts."
+          value={form.lockout_minutes} onChange={(v) => setForm({ ...form, lockout_minutes: v })}
+        />
+        <SettingsNumberField
+          label="Resend cooldown (seconds)" min={10} max={600}
+          hint="Minimum wait between clicking \"Resend code\" twice."
+          value={form.resend_cooldown_seconds} onChange={(v) => setForm({ ...form, resend_cooldown_seconds: v })}
+        />
+        <SettingsNumberField
+          label="Resend limit (per hour)" min={1} max={50}
+          hint="Maximum codes one person can request in an hour."
+          value={form.resend_hourly_cap} onChange={(v) => setForm({ ...form, resend_hourly_cap: v })}
+        />
+      </Card>
+
+      <Card style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: BRAND.ink, marginBottom: 14 }}>Sessions</div>
+        <SettingsNumberField
+          label="Idle timeout (hours)" min={1} max={168}
+          hint="Sign someone out automatically after this many hours of no activity."
+          value={form.idle_timeout_hours} onChange={(v) => setForm({ ...form, idle_timeout_hours: v })}
+        />
+        <SettingsNumberField
+          label="Session lifetime (days)" min={1} max={90}
+          hint="Maximum time a login stays valid even with regular activity."
+          value={form.session_lifetime_days} onChange={(v) => setForm({ ...form, session_lifetime_days: v })}
+        />
+        <SettingsNumberField
+          label="Concurrent devices allowed" min={1} max={20}
+          hint="Logging in on one more device than this automatically signs out the oldest one."
+          value={form.concurrent_session_limit} onChange={(v) => setForm({ ...form, concurrent_session_limit: v })}
+        />
+      </Card>
+
+      {settings.updated_at && (
+        <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#B7B2AE", marginBottom: 14 }}>
+          Last changed {new Date(settings.updated_at).toLocaleString()}{settings.updated_by ? ` by ${settings.updated_by}` : ""}.
+        </div>
+      )}
+
+      <PrimaryButton onClick={save} disabled={saving}>{saving ? "Saving…" : "Save settings"}</PrimaryButton>
+    </div>
+  );
+}
+
 /* =========================================================================
    ROOT
    ========================================================================= */
@@ -3813,6 +3866,7 @@ export default function RiseGtmApp() {
         {user.role === "admin" && view === "introductions" && <AdminIntroductionsView />}
         {user.role === "admin" && view === "invoices" && <AdminInvoicesView />}
         {user.role === "admin" && view === "payouts" && <AdminPayoutsView />}
+        {user.role === "admin" && view === "settings" && <AdminSettingsView />}
       </div>
 
       {openIntro && <IntroDetailModal intro={openIntro} user={user} onClose={() => setOpenIntro(null)} onRefresh={async () => refresh()} />}

@@ -525,6 +525,31 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_jti ON sessions(jti);
 
+    -- 24 Nov 2026 CS batch — session-security Phase 3. Every number Phase 1
+    -- and Phase 2 hard-coded (OTP validity, wrong-code attempt cap, resend
+    -- cooldown/hourly cap, lockout minutes, idle timeout, session lifetime,
+    -- concurrent-device cap) now lives here instead, so RIV admin can
+    -- change any of them from the Settings screen without a code change.
+    -- Single fixed row (id = 1) — this isn't a per-user or per-org table,
+    -- just one shared set of knobs for the whole portal. The DEFAULTs below
+    -- are exactly the values Phase 1/2 had hard-coded, so turning this on
+    -- changes nothing until admin actually edits something.
+    CREATE TABLE IF NOT EXISTS app_settings (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      otp_validity_minutes INTEGER NOT NULL DEFAULT 10,
+      max_code_attempts INTEGER NOT NULL DEFAULT 5,
+      resend_cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+      resend_hourly_cap INTEGER NOT NULL DEFAULT 5,
+      lockout_minutes INTEGER NOT NULL DEFAULT 15,
+      idle_timeout_hours INTEGER NOT NULL DEFAULT 8,
+      session_lifetime_days INTEGER NOT NULL DEFAULT 7,
+      concurrent_session_limit INTEGER NOT NULL DEFAULT 3,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_by TEXT,
+      CONSTRAINT app_settings_single_row CHECK (id = 1)
+    );
+    INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
     -- 7 Nov 2026 leader feedback — "Intro Only" vs "Intro + Closure Support"
     -- flag, set by the GTM partner on Check Introduction Interest. See
     -- SUPPORT_TYPES above. Defaults to 'Intro Only' so every pre-existing
