@@ -3757,7 +3757,7 @@ function AdminSettingsView() {
         />
         <SettingsNumberField
           label="Resend cooldown (seconds)" min={10} max={600}
-          hint="Minimum wait between clicking \"Resend code\" twice."
+          hint={"Minimum wait between clicking \"Resend code\" twice."}
           value={form.resend_cooldown_seconds} onChange={(v) => setForm({ ...form, resend_cooldown_seconds: v })}
         />
         <SettingsNumberField
