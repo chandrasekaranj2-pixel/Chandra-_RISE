@@ -633,7 +633,7 @@ function navItemsFor(role) {
     { id: "retailers", label: "Retailer Directory" },
     { id: "introductions-requested", label: "Retailer Introductions Requested" },
     { id: "introductions-initiated", label: "Retailer Introductions Initiated by RIV" },
-    { id: "my-fees", label: "My Success Fees" },
+    { id: "my-fees", label: "RISE Commercialization Fees" },
   ] : [
     { id: "overview", label: "Overview" }, { id: "partners", label: "GTM Partners" }, { id: "startups", label: "Startups" },
     { id: "retailers", label: "Retailers" }, { id: "introductions", label: "Introductions" },
@@ -1129,6 +1129,11 @@ function PartnerStartupsView({ onViewDetails }) {
 // fields (never the GTM partner's share — see GET /me's column-stripping
 // in portal.js). Simple one-card view since a startup only ever sees its
 // own single profile, not a list.
+// 24 Nov 2026 CS batch — renamed/rewritten per exact copy supplied in
+// chat: tab/heading now "RISE Commercialization Fees" (see navItemsFor's
+// "my-fees" entry, which drives both the nav button label and the page
+// heading above this view from the same string), with a named intro
+// paragraph, a one-line explainer under each fee, and a closing footnote.
 function StartupFeesView() {
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState("");
@@ -1137,18 +1142,24 @@ function StartupFeesView() {
   if (!profile) return <Spinner />;
   const hasIntro = profile.intro_fee_pct != null;
   const hasCommercialization = profile.active_commercialization_fee_pct != null;
+  const startupName = profile.startup_name || "Your startup";
   return (
-    <Card style={{ padding: 20, maxWidth: 480 }}>
-      <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", marginBottom: 16, lineHeight: 1.6 }}>
-        The success fee RIV charges on introductions for {profile.startup_name || "your startup"}, depending on the level of support requested.
+    <Card style={{ padding: 20, maxWidth: 560 }}>
+      <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", marginBottom: 20, lineHeight: 1.6 }}>
+        These are the fees {startupName} has agreed to pay RIV on any commercial deal closed with a retailer or enterprise introduced through the RISE platform. The fee is a percentage of the deal value. The rate depends on the level of support RIV provides.
       </div>
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11.5, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>Introduction fee</div>
-        <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: BRAND.ink }}>{hasIntro ? `${profile.intro_fee_pct}%` : "Not yet set — contact RIV Admin"}</div>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11.5, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>Introduction Fee</div>
+        <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: BRAND.ink, marginBottom: 4 }}>{hasIntro ? `${profile.intro_fee_pct}%` : "Not yet set — contact RIV Admin"}</div>
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", lineHeight: 1.6 }}>Applies when RIV introduces you to a retailer or enterprise and you take the deal forward yourselves.</div>
       </div>
-      <div>
-        <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11.5, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>Active Commercialization Support fee</div>
-        <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: BRAND.ink }}>{hasCommercialization ? `${profile.active_commercialization_fee_pct}%` : "Not yet set — contact RIV Admin"}</div>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontFamily: FONT, fontWeight: 600, fontSize: 11.5, color: "#9B958F", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>Active Commercialization Support Fee</div>
+        <div style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: BRAND.ink, marginBottom: 4 }}>{hasCommercialization ? `${profile.active_commercialization_fee_pct}%` : "Not yet set — contact RIV Admin"}</div>
+        <div style={{ fontFamily: FONT, fontSize: 12.5, color: "#7A756F", lineHeight: 1.6 }}>Applies when RIV supports you through the deal after the introduction, such as on pilot scoping, stakeholder management or contracting.</div>
+      </div>
+      <div style={{ fontFamily: FONT, fontSize: 11.5, color: "#9B958F", lineHeight: 1.6, borderTop: `1px solid ${BRAND.line}`, paddingTop: 14 }}>
+        Fees apply only to deals that come through RISE introductions, as set out in your signed agreement with RIV. For questions about your fee terms, contact the RIV team.
       </div>
     </Card>
   );
